@@ -1,13 +1,13 @@
-name: Flamengo Notifier
+name: Flamengo Daily Briefing
 
 on:
   schedule:
-    # 09:00 BRT = 12:00 UTC. Roda todo dia de manhã (horário de Brasília).
+    # 09:00 BRT = 12:00 UTC. Boletim diario sobre o Mengao.
     - cron: "0 12 * * *"
   workflow_dispatch:
     inputs:
-      force_send:
-        description: "Enviar mensagem mesmo sem jogo (teste)"
+      dry_run:
+        description: "Apenas imprimir, sem enviar WhatsApp"
         required: false
         default: "0"
 
@@ -31,5 +31,5 @@ jobs:
         env:
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
-          FORCE_SEND: ${{ github.event.inputs.force_send || '0' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
         run: python flamengo_notifier.py

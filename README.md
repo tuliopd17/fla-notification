@@ -1,8 +1,13 @@
-# Flamengo Notifier 🔴⚫
+# Flamengo Daily Briefing 🔴⚫
 
-Recebe um WhatsApp toda manhã quando o Flamengo joga, com horário, adversário, competição e local.
+Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 
-**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca jogos na TheSportsDB (gratuita, sem chave) e envia via CallMeBot (gratuito).
+**O que vem na mensagem:**
+- 📊 Último resultado (com placar e indicação de vitória/empate/derrota)
+- ⏰ Próximo jogo (com destaque especial se for HOJE)
+- 📋 Situação nas competições (posição no Brasileirão, fase em mata-matas, ligas ativas)
+
+**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca dados na TheSportsDB (gratuita, sem chave) e envia via CallMeBot (gratuito).
 
 Não precisa deixar nada ligado no seu computador.
 
@@ -12,10 +17,11 @@ Não precisa deixar nada ligado no seu computador.
 
 Todo dia às **09:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
 
-1. Pergunta pra TheSportsDB quais são os próximos jogos do Flamengo e filtra os de hoje.
-2. Se joga, monta uma mensagem bonitinha.
-3. Te envia via WhatsApp pelo CallMeBot.
-4. Se não joga, não envia nada (assim você não recebe spam).
+1. Busca os próximos e últimos jogos do Flamengo na TheSportsDB.
+2. Puxa a tabela do Brasileirão e identifica as competições em que o time está.
+3. Monta o boletim do dia e envia no seu WhatsApp via CallMeBot.
+
+Você recebe **1 mensagem por dia, sempre**. Em dia de jogo o boletim destaca "HOJE TEM MENGÃO!".
 
 ---
 
@@ -59,11 +65,11 @@ Crie estes dois:
 
 ### 5. Testar agora
 
-No GitHub: **Actions → Flamengo Notifier → Run workflow**.
+No GitHub: **Actions → Flamengo Daily Briefing → Run workflow**.
 
-Marque **`force_send = 1`** se quiser receber a mensagem mesmo sem jogo hoje (pra confirmar que tá funcionando).
+Se quiser só ver no log sem enviar WhatsApp, marque **`dry_run = 1`**. Caso contrário, deixe `0` e você já recebe o boletim de hoje.
 
-Pronto. Daqui pra frente roda automático todo dia.
+Pronto. Daqui pra frente roda automático todo dia às 9h.
 
 ---
 
@@ -77,9 +83,9 @@ Pronto. Daqui pra frente roda automático todo dia.
 - cron: "30 11 * * *"  # 08:30 BRT
 ```
 
-**Múltiplos avisos por dia (ex: manhã + 1h antes):** dá pra adicionar lógica no script pra calcular distância até o kickoff. Me avisa que eu faço.
+**Quer um lembrete extra perto do kickoff?** Dá pra adicionar uma segunda execução no cron que dispara só se houver jogo nas próximas 2h. Me avisa que eu faço.
 
-**Quer também resumo semanal na segunda?** Adicione uma segunda entrada no cron e um flag pro script. Posso implementar.
+**Quer placar quase em tempo real (notificação no fim do jogo)?** A TheSportsDB tem endpoint de eventos ao vivo (`/eventslivescore.php`). Posso adicionar um job que roda a cada 30min só nos dias de jogo.
 
 ---
 

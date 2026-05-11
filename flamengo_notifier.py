@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Flamengo Match Notifier
+Flamengo Daily Briefing
 -----------------------
-Consulta a TheSportsDB (gratuita, sem chave), verifica se o Flamengo joga HOJE
-(timezone America/Sao_Paulo) e, em caso positivo, envia uma mensagem no WhatsApp
-via CallMeBot.
+Boletim diario sobre o Flamengo, enviado por WhatsApp via CallMeBot.
+Dados: TheSportsDB (gratuita, sem chave).
 
-Variaveis de ambiente esperadas (configuradas como GitHub Secrets):
-    CALLMEBOT_PHONE   -> seu numero no formato internacional, ex: 5521999999999
+Contem:
+  - Ultimo resultado
+  - Proximo jogo (com destaque se for HOJE)
+  - Situacao nas competicoes ativas (posicao no Brasileirao, fase de mata-matas)
+
+Variaveis de ambiente:
+    CALLMEBOT_PHONE   -> seu numero internacional, ex: 5521999999999
     CALLMEBOT_APIKEY  -> apikey gerada pelo CallMeBot
-    FORCE_SEND        -> (opcional) "1" envia mensagem mesmo sem jogo (util para teste)
-
-Nao precisa mais de chave de API de futebol -- TheSportsDB e' aberto.
+    DRY_RUN           -> (opcional) "1" imprime mas nao envia
 """
 
 from __future__ import annotations
@@ -23,59 +25,43 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-# Flamengo na TheSportsDB. ID estavel: 134301.
 FLAMENGO_ID = "134301"
+BRASILEIRAO_ID = "4351"
+
 BR_TZ = timezone(timedelta(hours=-3))
 
-# Endpoint publico, free tier usa a key "3"
-SPORTSDB_NEXT_EVENTS = "https://www.thesportsdb.com/api/v1/json/3/eventsnext.php"
+SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json/3"
+SPORTSDB_NEXT = SPORTSDB_BASE + "/eventsnext.php"
+SPORTSDB_LAST = SPORTSDB_BASE + "/eventslast.php"
+SPORTSDB_TABLE = SPORTSDB_BASE + "/lookuptable.php"
+
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
-# Emojis em escape Unicode para evitar problemas de encoding em pipelines.
-EMOJI_RED   = "\U0001F534"
-EMOJI_BLACK = "⚫"
-EMOJI_CLOCK = "⏰"
-EMOJI_CUP   = "\U0001F3C6"
-EMOJI_PIN   = "\U0001F4CD"
-EMOJI_FIRE  = "\U0001F525"
-EMOJI_RUBRO = EMOJI_RED + EMOJI_BLACK
+E_RUBRO = "\U0001F534" + "⚫"
+E_CLOCK = "⏰"
+E_CUP   = "\U0001F3C6"
+E_PIN   = "\U0001F4CD"
+E_FIRE  = "\U0001F525"
+E_CHART = "\U0001F4CA"
+E_NOTE  = "\U0001F4CB"
+
+DIAS_PT = ["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]
+MESES_PT = ["", "jan", "fev", "mar", "abr", "mai", "jun",
+            "jul", "ago", "set", "out", "nov", "dez"]
 
 
-def get_today_br():
-    return datetime.now(BR_TZ).strftime("%Y-%m-%d")
+def now_br():
+    return datetime.now(BR_TZ)
 
 
-def fetch_fixtures(today_br_str):
-    """Busca os proximos jogos do Flamengo na TheSportsDB e devolve so os de hoje.
-
-    O endpoint /eventsnext.php?id=... retorna ate 15 proximos eventos.
-    Filtramos pelos que caem na data de hoje no fuso BR.
-    """
-    params = {"id": FLAMENGO_ID}
-    resp = requests.get(SPORTSDB_NEXT_EVENTS, params=params, timeout=20)
-    resp.raise_for_status()
-    data = resp.json() or {}
-    events = data.get("events") or []
-    today_matches = []
-    for ev in events:
-        kickoff = _event_kickoff_br(ev)
-        if kickoff is None:
-            continue
-        if kickoff.strftime("%Y-%m-%d") == today_br_str:
-            today_matches.append(ev)
-    return today_matches
+def today_br_str():
+    return now_br().strftime("%Y-%m-%d")
 
 
-def _event_kickoff_br(ev):
-    """Extrai o kickoff em horario de Brasilia a partir do evento da TheSportsDB.
-
-    A API expoe 'strTimestamp' (UTC, ISO) e tambem 'dateEvent' + 'strTime'.
-    Preferimos o timestamp UTC e convertemos.
-    """
+def parse_event_kickoff(ev):
     ts = ev.get("strTimestamp")
     if ts:
         try:
-            # Formato tipico: "2026-05-11 22:00:00" em UTC, sem timezone
             dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             return dt.astimezone(BR_TZ)
         except ValueError:
@@ -91,33 +77,212 @@ def _event_kickoff_br(ev):
     return None
 
 
-def format_message(events):
-    today_br = datetime.now(BR_TZ).strftime("%d/%m/%Y")
-    if not events:
-        return u"{} Mengão hoje ({}): sem jogo. Descansa, Mengão.".format(EMOJI_RUBRO, today_br)
+def format_event_datetime(dt):
+    if dt is None:
+        return "data a confirmar"
+    hoje = now_br().date()
+    if dt.date() == hoje:
+        return u"HOJE às {}".format(dt.strftime("%H:%M"))
+    if dt.date() == hoje + timedelta(days=1):
+        return u"AMANHÃ às {}".format(dt.strftime("%H:%M"))
+    dia = DIAS_PT[dt.weekday()].upper()
+    return u"{} {}/{} às {}".format(dia, dt.strftime("%d"), dt.strftime("%m"), dt.strftime("%H:%M"))
 
-    lines = [u"{} *Jogo do Flamengo hoje* ({})".format(EMOJI_RUBRO, today_br), ""]
-    for ev in events:
-        kickoff = _event_kickoff_br(ev)
-        hora = kickoff.strftime("%H:%M") if kickoff else "horario a confirmar"
 
-        home = ev.get("strHomeTeam") or "?"
-        away = ev.get("strAwayTeam") or "?"
-        league = ev.get("strLeague") or ""
-        round_ = ev.get("intRound") or ""
-        venue = ev.get("strVenue") or "Local a confirmar"
+def format_short_date(dt):
+    if dt is None:
+        return "?"
+    return u"{}/{}".format(dt.strftime("%d"), MESES_PT[dt.month])
 
-        lines.append(u"{} {} - {} x {}".format(EMOJI_CLOCK, hora, home, away))
-        league_line = u"{} {}".format(EMOJI_CUP, league) if league else ""
-        if round_:
-            league_line += u" (Rodada {})".format(round_)
-        if league_line:
-            lines.append(league_line)
-        lines.append(u"{} {}".format(EMOJI_PIN, venue))
-        lines.append("")
 
-    lines.append(u"VAMO MENGÃO! {}".format(EMOJI_FIRE))
-    return "\n".join(lines).strip()
+def _http_get_json(url, params, timeout=20):
+    resp = requests.get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json() or {}
+
+
+def fetch_next_events():
+    data = _http_get_json(SPORTSDB_NEXT, {"id": FLAMENGO_ID})
+    return data.get("events") or []
+
+
+def fetch_last_events():
+    data = _http_get_json(SPORTSDB_LAST, {"id": FLAMENGO_ID})
+    return data.get("results") or data.get("events") or []
+
+
+def fetch_brasileirao_table():
+    season = str(now_br().year)
+    try:
+        data = _http_get_json(SPORTSDB_TABLE, {"l": BRASILEIRAO_ID, "s": season})
+    except Exception as e:
+        print("AVISO: nao consegui buscar tabela do Brasileirao ({}): {}".format(season, e))
+        return None
+    table = data.get("table") or []
+    for row in table:
+        name = (row.get("strTeam") or "").lower()
+        if "flamengo" in name:
+            return row
+    return None
+
+
+def is_flamengo(team_name):
+    return "flamengo" in (team_name or "").lower()
+
+
+def build_last_result_section(last_events):
+    if not last_events:
+        return None
+    ev = last_events[0]
+    home = ev.get("strHomeTeam") or "?"
+    away = ev.get("strAwayTeam") or "?"
+    score_h = ev.get("intHomeScore")
+    score_a = ev.get("intAwayScore")
+    league = ev.get("strLeague") or ""
+    venue = ev.get("strVenue") or ""
+    kickoff = parse_event_kickoff(ev)
+    date_str = format_short_date(kickoff)
+
+    if score_h is None or score_a is None:
+        return None
+
+    placar = u"{} {} x {} {}".format(home, score_h, away, score_a)
+    try:
+        sh = int(score_h)
+        sa = int(score_a)
+        if is_flamengo(home):
+            tag = u"✅ vitória" if sh > sa else (u"❌ derrota" if sh < sa else u"➖ empate")
+        elif is_flamengo(away):
+            tag = u"✅ vitória" if sa > sh else (u"❌ derrota" if sa < sh else u"➖ empate")
+        else:
+            tag = ""
+    except (TypeError, ValueError):
+        tag = ""
+
+    lines = [u"{} *Último resultado*".format(E_CHART)]
+    head = placar
+    if tag:
+        head = u"{}  ({})".format(head, tag)
+    lines.append(head)
+    if league and venue:
+        lines.append(u"{} • {} • {}".format(league, venue, date_str))
+    elif league:
+        lines.append(u"{} • {}".format(league, date_str))
+    elif venue:
+        lines.append(u"{} • {}".format(venue, date_str))
+    return "\n".join(lines)
+
+
+def build_next_match_section(next_events):
+    if not next_events:
+        return None
+    ev = next_events[0]
+    kickoff = parse_event_kickoff(ev)
+    home = ev.get("strHomeTeam") or "?"
+    away = ev.get("strAwayTeam") or "?"
+    league = ev.get("strLeague") or ""
+    venue = ev.get("strVenue") or "Local a confirmar"
+
+    is_today = kickoff is not None and kickoff.date() == now_br().date()
+    if is_today:
+        header = u"{} *HOJE TEM MENGÃO!* {}".format(E_FIRE, E_FIRE)
+    else:
+        header = u"{} *Próximo jogo*".format(E_CLOCK)
+
+    lines = [header, format_event_datetime(kickoff), u"{} x {}".format(home, away)]
+    foot_bits = []
+    if league:
+        foot_bits.append(u"{} {}".format(E_CUP, league))
+    if venue:
+        foot_bits.append(u"{} {}".format(E_PIN, venue))
+    if foot_bits:
+        lines.append(u" • ".join(foot_bits))
+    return "\n".join(lines)
+
+
+def build_competitions_section(next_events, last_events, br_table_row):
+    leagues = []
+    seen = set()
+    for ev in (next_events + last_events):
+        lg = (ev.get("strLeague") or "").strip()
+        if lg and lg.lower() not in seen:
+            seen.add(lg.lower())
+            leagues.append(lg)
+
+    if not leagues and not br_table_row:
+        return None
+
+    lines = [u"{} *Situação nas competições*".format(E_NOTE)]
+    br_added = False
+    for lg in leagues:
+        lg_lower = lg.lower()
+        is_brasileirao = ("serie a" in lg_lower or "série a" in lg_lower or "brasileir" in lg_lower)
+        if is_brasileirao and br_table_row:
+            pos = br_table_row.get("intRank") or "?"
+            pts = br_table_row.get("intPoints") or "?"
+            played = br_table_row.get("intPlayed") or "?"
+            wins = br_table_row.get("intWin") or "?"
+            draws = br_table_row.get("intDraw") or "?"
+            losses = br_table_row.get("intLoss") or "?"
+            lines.append(u"{} {}: {}º lugar • {} pts em {} jogos ({}V {}E {}D)".format(
+                E_CUP, lg, pos, pts, played, wins, draws, losses))
+            br_added = True
+        elif is_brasileirao:
+            lines.append(u"{} {} (tabela indisponível agora)".format(E_CUP, lg))
+            br_added = True
+        else:
+            round_info = ""
+            for ev in next_events:
+                if (ev.get("strLeague") or "").lower() == lg_lower:
+                    r = ev.get("intRound") or ""
+                    if r:
+                        round_info = u" — {}".format(r)
+                    break
+            lines.append(u"{} {}{}".format(E_CUP, lg, round_info))
+
+    if br_table_row and not br_added:
+        pos = br_table_row.get("intRank") or "?"
+        pts = br_table_row.get("intPoints") or "?"
+        played = br_table_row.get("intPlayed") or "?"
+        lines.append(u"{} Brasileirão Série A: {}º lugar • {} pts em {} jogos".format(
+            E_CUP, pos, pts, played))
+
+    return "\n".join(lines)
+
+
+def build_message():
+    today_label = now_br().strftime("%d/%m/%Y")
+    dia_semana = DIAS_PT[now_br().weekday()]
+    header = u"{} *Boletim do Mengão* — {}, {}".format(E_RUBRO, dia_semana, today_label)
+
+    try:
+        next_events = fetch_next_events()
+    except Exception as e:
+        print("AVISO: falha em fetch_next_events: {}".format(e))
+        next_events = []
+    try:
+        last_events = fetch_last_events()
+    except Exception as e:
+        print("AVISO: falha em fetch_last_events: {}".format(e))
+        last_events = []
+    br_row = fetch_brasileirao_table()
+
+    sections = [header]
+    s_last = build_last_result_section(last_events)
+    if s_last:
+        sections.append(s_last)
+    s_next = build_next_match_section(next_events)
+    if s_next:
+        sections.append(s_next)
+    s_comp = build_competitions_section(next_events, last_events, br_row)
+    if s_comp:
+        sections.append(s_comp)
+
+    if not s_last and not s_next and not s_comp:
+        sections.append(u"Sem novidades hoje. É hora de descansar, Mengão.")
+
+    sections.append(u"VAMO MENGÃO! {}".format(E_FIRE))
+    return "\n\n".join(sections).strip()
 
 
 def send_whatsapp(phone, apikey, message):
@@ -132,33 +297,20 @@ def send_whatsapp(phone, apikey, message):
 def main():
     phone = os.environ.get("CALLMEBOT_PHONE")
     apikey = os.environ.get("CALLMEBOT_APIKEY")
-    force_send = os.environ.get("FORCE_SEND") == "1"
+    dry_run = os.environ.get("DRY_RUN") == "1"
 
-    missing = [k for k, v in {
-        "CALLMEBOT_PHONE": phone,
-        "CALLMEBOT_APIKEY": apikey,
-    }.items() if not v]
-    if missing:
-        print("ERRO: variaveis de ambiente faltando: {}".format(", ".join(missing)), file=sys.stderr)
+    if not phone or not apikey:
+        print("ERRO: defina CALLMEBOT_PHONE e CALLMEBOT_APIKEY", file=sys.stderr)
         return 2
 
-    today = get_today_br()
-    print("Buscando jogos do Flamengo em {}...".format(today))
+    msg = build_message()
+    print(u"--- BOLETIM ---")
+    print(msg)
+    print(u"--- FIM ---")
 
-    try:
-        events = fetch_fixtures(today)
-    except Exception as e:
-        print("ERRO ao buscar fixtures: {}".format(e), file=sys.stderr)
-        return 1
-
-    print("Encontrados {} jogo(s) hoje.".format(len(events)))
-
-    if not events and not force_send:
-        print("Sem jogo hoje. Nao enviando mensagem.")
+    if dry_run:
+        print("DRY_RUN=1, nao enviei.")
         return 0
-
-    msg = format_message(events)
-    print(u"Mensagem que sera enviada:\n" + msg)
 
     try:
         send_whatsapp(phone, apikey, msg)
@@ -166,7 +318,6 @@ def main():
     except Exception as e:
         print("ERRO ao enviar WhatsApp: {}".format(e), file=sys.stderr)
         return 1
-
     return 0
 
 
