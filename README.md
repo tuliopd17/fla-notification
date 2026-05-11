@@ -2,7 +2,7 @@
 
 Recebe um WhatsApp toda manhã quando o Flamengo joga, com horário, adversário, competição e local.
 
-**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca jogos na API-Football (free tier) e envia via CallMeBot (gratuito).
+**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca jogos na TheSportsDB (gratuita, sem chave) e envia via CallMeBot (gratuito).
 
 Não precisa deixar nada ligado no seu computador.
 
@@ -12,7 +12,7 @@ Não precisa deixar nada ligado no seu computador.
 
 Todo dia às **09:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
 
-1. Pergunta pra API-Football se o Flamengo joga hoje.
+1. Pergunta pra TheSportsDB quais são os próximos jogos do Flamengo e filtra os de hoje.
 2. Se joga, monta uma mensagem bonitinha.
 3. Te envia via WhatsApp pelo CallMeBot.
 4. Se não joga, não envia nada (assim você não recebe spam).
@@ -30,12 +30,9 @@ Todo dia às **09:00 (horário de Brasília)** o GitHub Actions executa o script
 
 > Documentação oficial: https://www.callmebot.com/blog/free-api-whatsapp-messages/
 
-### 2. Pegar a chave da API-Football
+### 2. API de futebol
 
-1. Vá em https://www.api-football.com/ e crie uma conta gratuita.
-2. No dashboard, copie sua **API key**. O free tier dá 100 requisições/dia — mais que suficiente (a gente faz 1 por dia).
-
-> Alternativa: dá pra pegar via RapidAPI também, mas direto pelo site é mais simples.
+Não precisa de nada. Usamos a [TheSportsDB](https://www.thesportsdb.com/), que é totalmente gratuita e não exige cadastro ou chave de API. O Flamengo tem ID fixo `134301` lá.
 
 ### 3. Subir esse projeto no GitHub
 
@@ -53,11 +50,10 @@ gh repo create flamengo-notifier --private --source=. --push
 
 No repo no GitHub: **Settings → Secrets and variables → Actions → New repository secret**.
 
-Crie estes três:
+Crie estes dois:
 
 | Nome                  | Valor                                                |
 |-----------------------|------------------------------------------------------|
-| `API_FOOTBALL_KEY`    | sua chave da API-Football                            |
 | `CALLMEBOT_PHONE`     | seu número, ex: `5521988887777` (sem `+`, sem espaço)|
 | `CALLMEBOT_APIKEY`    | a apikey que o CallMeBot te mandou                   |
 

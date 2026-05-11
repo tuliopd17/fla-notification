@@ -29,7 +29,6 @@ jobs:
 
       - name: Run notifier
         env:
-          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           FORCE_SEND: ${{ github.event.inputs.force_send || '0' }}

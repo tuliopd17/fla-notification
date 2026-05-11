@@ -2,14 +2,16 @@
 """
 Flamengo Match Notifier
 -----------------------
-Consulta a API-Football, verifica se o Flamengo joga HOJE (timezone America/Sao_Paulo)
-e, em caso positivo, envia uma mensagem no WhatsApp via CallMeBot.
+Consulta a TheSportsDB (gratuita, sem chave), verifica se o Flamengo joga HOJE
+(timezone America/Sao_Paulo) e, em caso positivo, envia uma mensagem no WhatsApp
+via CallMeBot.
 
 Variaveis de ambiente esperadas (configuradas como GitHub Secrets):
-    API_FOOTBALL_KEY  -> chave da API-Football (api-football.com)
     CALLMEBOT_PHONE   -> seu numero no formato internacional, ex: 5521999999999
     CALLMEBOT_APIKEY  -> apikey gerada pelo CallMeBot
     FORCE_SEND        -> (opcional) "1" envia mensagem mesmo sem jogo (util para teste)
+
+Nao precisa mais de chave de API de futebol -- TheSportsDB e' aberto.
 """
 
 from __future__ import annotations
@@ -21,19 +23,21 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-FLAMENGO_TEAM_ID = 127
+# Flamengo na TheSportsDB. ID estavel: 134301.
+FLAMENGO_ID = "134301"
 BR_TZ = timezone(timedelta(hours=-3))
 
-API_FOOTBALL_URL = "https://v3.football.api-sports.io/fixtures"
+# Endpoint publico, free tier usa a key "3"
+SPORTSDB_NEXT_EVENTS = "https://www.thesportsdb.com/api/v1/json/3/eventsnext.php"
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
-# Emojis em escape Unicode para evitar qualquer problema de encoding na pipeline.
-EMOJI_RED   = "\U0001F534"  # circulo vermelho
-EMOJI_BLACK = "⚫"      # circulo preto
-EMOJI_CLOCK = "⏰"      # despertador
-EMOJI_CUP   = "\U0001F3C6"  # trofeu
-EMOJI_PIN   = "\U0001F4CD"  # pin de localizacao
-EMOJI_FIRE  = "\U0001F525"  # fogo
+# Emojis em escape Unicode para evitar problemas de encoding em pipelines.
+EMOJI_RED   = "\U0001F534"
+EMOJI_BLACK = "⚫"
+EMOJI_CLOCK = "⏰"
+EMOJI_CUP   = "\U0001F3C6"
+EMOJI_PIN   = "\U0001F4CD"
+EMOJI_FIRE  = "\U0001F525"
 EMOJI_RUBRO = EMOJI_RED + EMOJI_BLACK
 
 
@@ -41,48 +45,74 @@ def get_today_br():
     return datetime.now(BR_TZ).strftime("%Y-%m-%d")
 
 
-def fetch_fixtures(api_key, date_str):
-    """Busca jogos do Flamengo numa data especifica.
+def fetch_fixtures(today_br_str):
+    """Busca os proximos jogos do Flamengo na TheSportsDB e devolve so os de hoje.
 
-    A API-Football exige `season` quando se filtra por `team`. Usamos o ano da
-    propria data consultada (calendario brasileiro = ano civil).
+    O endpoint /eventsnext.php?id=... retorna ate 15 proximos eventos.
+    Filtramos pelos que caem na data de hoje no fuso BR.
     """
-    headers = {"x-apisports-key": api_key}
-    season = int(date_str.split("-")[0])
-    params = {
-        "team": FLAMENGO_TEAM_ID,
-        "season": season,
-        "date": date_str,
-        "timezone": "America/Sao_Paulo",
-    }
-    resp = requests.get(API_FOOTBALL_URL, headers=headers, params=params, timeout=20)
+    params = {"id": FLAMENGO_ID}
+    resp = requests.get(SPORTSDB_NEXT_EVENTS, params=params, timeout=20)
     resp.raise_for_status()
-    data = resp.json()
-    errors = data.get("errors")
-    if errors and (isinstance(errors, dict) or len(errors) > 0):
-        raise RuntimeError("Erro da API-Football: {}".format(errors))
-    return data.get("response", []) or []
+    data = resp.json() or {}
+    events = data.get("events") or []
+    today_matches = []
+    for ev in events:
+        kickoff = _event_kickoff_br(ev)
+        if kickoff is None:
+            continue
+        if kickoff.strftime("%Y-%m-%d") == today_br_str:
+            today_matches.append(ev)
+    return today_matches
 
 
-def format_message(fixtures):
+def _event_kickoff_br(ev):
+    """Extrai o kickoff em horario de Brasilia a partir do evento da TheSportsDB.
+
+    A API expoe 'strTimestamp' (UTC, ISO) e tambem 'dateEvent' + 'strTime'.
+    Preferimos o timestamp UTC e convertemos.
+    """
+    ts = ev.get("strTimestamp")
+    if ts:
+        try:
+            # Formato tipico: "2026-05-11 22:00:00" em UTC, sem timezone
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            return dt.astimezone(BR_TZ)
+        except ValueError:
+            pass
+    date_ev = ev.get("dateEvent")
+    time_ev = ev.get("strTime") or "00:00:00"
+    if date_ev:
+        try:
+            dt = datetime.strptime(date_ev + " " + time_ev, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            return dt.astimezone(BR_TZ)
+        except ValueError:
+            return None
+    return None
+
+
+def format_message(events):
     today_br = datetime.now(BR_TZ).strftime("%d/%m/%Y")
-    if not fixtures:
+    if not events:
         return u"{} Mengão hoje ({}): sem jogo. Descansa, Mengão.".format(EMOJI_RUBRO, today_br)
 
     lines = [u"{} *Jogo do Flamengo hoje* ({})".format(EMOJI_RUBRO, today_br), ""]
-    for fx in fixtures:
-        kickoff_iso = fx["fixture"]["date"]
-        kickoff = datetime.fromisoformat(kickoff_iso.replace("Z", "+00:00")).astimezone(BR_TZ)
-        hora = kickoff.strftime("%H:%M")
+    for ev in events:
+        kickoff = _event_kickoff_br(ev)
+        hora = kickoff.strftime("%H:%M") if kickoff else "horario a confirmar"
 
-        home = fx["teams"]["home"]["name"]
-        away = fx["teams"]["away"]["name"]
-        league = fx["league"]["name"]
-        round_ = fx["league"].get("round", "")
-        venue = (fx["fixture"].get("venue") or {}).get("name") or "Local a confirmar"
+        home = ev.get("strHomeTeam") or "?"
+        away = ev.get("strAwayTeam") or "?"
+        league = ev.get("strLeague") or ""
+        round_ = ev.get("intRound") or ""
+        venue = ev.get("strVenue") or "Local a confirmar"
 
         lines.append(u"{} {} - {} x {}".format(EMOJI_CLOCK, hora, home, away))
-        lines.append(u"{} {}".format(EMOJI_CUP, league) + (u" ({})".format(round_) if round_ else ""))
+        league_line = u"{} {}".format(EMOJI_CUP, league) if league else ""
+        if round_:
+            league_line += u" (Rodada {})".format(round_)
+        if league_line:
+            lines.append(league_line)
         lines.append(u"{} {}".format(EMOJI_PIN, venue))
         lines.append("")
 
@@ -100,13 +130,11 @@ def send_whatsapp(phone, apikey, message):
 
 
 def main():
-    api_key = os.environ.get("API_FOOTBALL_KEY")
     phone = os.environ.get("CALLMEBOT_PHONE")
     apikey = os.environ.get("CALLMEBOT_APIKEY")
     force_send = os.environ.get("FORCE_SEND") == "1"
 
     missing = [k for k, v in {
-        "API_FOOTBALL_KEY": api_key,
         "CALLMEBOT_PHONE": phone,
         "CALLMEBOT_APIKEY": apikey,
     }.items() if not v]
@@ -118,18 +146,18 @@ def main():
     print("Buscando jogos do Flamengo em {}...".format(today))
 
     try:
-        fixtures = fetch_fixtures(api_key, today)
+        events = fetch_fixtures(today)
     except Exception as e:
         print("ERRO ao buscar fixtures: {}".format(e), file=sys.stderr)
         return 1
 
-    print("Encontrados {} jogo(s) hoje.".format(len(fixtures)))
+    print("Encontrados {} jogo(s) hoje.".format(len(events)))
 
-    if not fixtures and not force_send:
+    if not events and not force_send:
         print("Sem jogo hoje. Nao enviando mensagem.")
         return 0
 
-    msg = format_message(fixtures)
+    msg = format_message(events)
     print(u"Mensagem que sera enviada:\n" + msg)
 
     try:
