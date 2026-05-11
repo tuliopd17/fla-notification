@@ -25,8 +25,14 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-FLAMENGO_ID = "134301"
+# ATENCAO: nao usar ID hardcoded. O 134301 e' do AFC Bournemouth.
+# Resolvemos o ID dinamicamente filtrando por nome+pais.
+FLAMENGO_NAME = "Flamengo"
+FLAMENGO_COUNTRY = "Brazil"
 BRASILEIRAO_ID = "4351"
+
+# Cache resolvido em runtime
+_FLAMENGO_ID_CACHE = None
 
 BR_TZ = timezone(timedelta(hours=-3))
 
@@ -34,6 +40,7 @@ SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json/3"
 SPORTSDB_NEXT = SPORTSDB_BASE + "/eventsnext.php"
 SPORTSDB_LAST = SPORTSDB_BASE + "/eventslast.php"
 SPORTSDB_TABLE = SPORTSDB_BASE + "/lookuptable.php"
+SPORTSDB_SEARCH = SPORTSDB_BASE + "/searchteams.php"
 
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
@@ -101,13 +108,44 @@ def _http_get_json(url, params, timeout=20):
     return resp.json() or {}
 
 
+def resolve_flamengo_id():
+    """Descobre o idTeam do Flamengo (RJ) na TheSportsDB.
+
+    Buscamos pelo nome e filtramos por pais=Brazil + esporte=Soccer pra evitar
+    pegar o AFC Bournemouth (que se chama Bournemouth mas a busca por
+    'Flamengo' tambem retorna times homonimos do exterior em alguns casos).
+    """
+    global _FLAMENGO_ID_CACHE
+    if _FLAMENGO_ID_CACHE:
+        return _FLAMENGO_ID_CACHE
+    data = _http_get_json(SPORTSDB_SEARCH, {"t": FLAMENGO_NAME})
+    teams = data.get("teams") or []
+    # Priorizar Flamengo do RJ: nome exato + Brazil + Soccer
+    for t in teams:
+        name = (t.get("strTeam") or "").strip().lower()
+        country = (t.get("strCountry") or "").strip().lower()
+        sport = (t.get("strSport") or "").strip().lower()
+        if name == "flamengo" and country == "brazil" and sport == "soccer":
+            _FLAMENGO_ID_CACHE = t.get("idTeam")
+            print("Flamengo resolvido: idTeam={}".format(_FLAMENGO_ID_CACHE))
+            return _FLAMENGO_ID_CACHE
+    # Fallback: qualquer time brasileiro chamado Flamengo
+    for t in teams:
+        country = (t.get("strCountry") or "").strip().lower()
+        if country == "brazil":
+            _FLAMENGO_ID_CACHE = t.get("idTeam")
+            print("Flamengo (fallback BR) resolvido: idTeam={}".format(_FLAMENGO_ID_CACHE))
+            return _FLAMENGO_ID_CACHE
+    raise RuntimeError("Nao consegui resolver o idTeam do Flamengo RJ. Resposta: {}".format(teams[:2]))
+
+
 def fetch_next_events():
-    data = _http_get_json(SPORTSDB_NEXT, {"id": FLAMENGO_ID})
+    data = _http_get_json(SPORTSDB_NEXT, {"id": resolve_flamengo_id()})
     return data.get("events") or []
 
 
 def fetch_last_events():
-    data = _http_get_json(SPORTSDB_LAST, {"id": FLAMENGO_ID})
+    data = _http_get_json(SPORTSDB_LAST, {"id": resolve_flamengo_id()})
     return data.get("results") or data.get("events") or []
 
 
