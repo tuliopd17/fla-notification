@@ -261,9 +261,25 @@ def section_last_and_form(recent_matches):
             elif o == "E": emojis.append(E_DRAW); e += 1
             elif o == "D": emojis.append(E_X); d += 1
         if emojis:
+            pts_recent = v * 3 + e  # pontos somados nos ultimos jogos
+            max_pts = len(emojis) * 3
+            mood = ""
+            if max_pts > 0:
+                ratio = pts_recent / max_pts
+                if ratio >= 0.8:
+                    mood = u" 🔥 embalado"
+                elif ratio >= 0.6:
+                    mood = u" 💪 bem"
+                elif ratio >= 0.4:
+                    mood = u" 😐 irregular"
+                elif ratio >= 0.2:
+                    mood = u" 😬 mal"
+                else:
+                    mood = u" 😱 péssimo"
             lines.append("")
             lines.append(u"{} *Forma recente:* {}".format(E_TREND, "".join(emojis)))
-            lines.append(u"   ({}V {}E {}D nos últimos {})".format(v, e, d, len(emojis)))
+            lines.append(u"   ({}V {}E {}D • {} pts em {} jogos{})".format(
+                v, e, d, pts_recent, len(emojis), mood))
     return "\n".join(lines)
 
 
@@ -347,6 +363,22 @@ def section_standings(fla_row, full_table):
     zona = _zona_brasileirao(pos)
     if zona:
         lines.append(u"   {}".format(zona))
+
+    # Distancia pro 5o (margem da zona da Libertadores) - so se Flamengo estiver no G4
+    if full_table and isinstance(pos, int) and 1 <= pos <= 4:
+        fifth = None
+        for row in full_table:
+            if row.get("position") == 5:
+                fifth = row
+                break
+        if fifth and fifth.get("points") is not None and pts is not None:
+            try:
+                margin = pts - fifth.get("points")
+                if margin >= 0:
+                    lines.append(u"   margem de {} pt(s) sobre o 5º".format(margin))
+            except (TypeError, ValueError):
+                pass
+
     return "\n".join(lines)
 
 
@@ -395,6 +427,37 @@ def section_calendar(upcoming):
     return "\n".join(lines)
 
 
+def section_classics_warning(upcoming, full_table):
+    """Se houver classico (vs top 4 do Brasileirao) nos proximos 3 jogos, destaca."""
+    if not upcoming or not full_table:
+        return None
+    top4_ids = set()
+    for row in full_table:
+        if row.get("position") and row["position"] <= 4:
+            tid = (row.get("team") or {}).get("id")
+            if tid and tid != FLAMENGO_ID:
+                top4_ids.add(tid)
+    if not top4_ids:
+        return None
+    classicos = []
+    for m in upcoming[:3]:
+        comp = (m.get("competition") or {}).get("name") or ""
+        if "brasileiro" not in comp.lower() and "serie a" not in comp.lower():
+            continue  # so brasileirao
+        for side_key in ("homeTeam", "awayTeam"):
+            side = m.get(side_key) or {}
+            if side.get("id") in top4_ids:
+                kickoff = parse_utc_iso(m.get("utcDate"))
+                classicos.append((kickoff, _name(side)))
+                break
+    if not classicos:
+        return None
+    # so mostra o primeiro/mais proximo classico
+    kickoff, adv = classicos[0]
+    return u"⚔️  *Clássico chegando:* vs {} em {} — confronto direto na briga pela liderança.".format(
+        adv, format_calendar_line(kickoff))
+
+
 # ---------- montagem ----------
 
 def build_message(token):
@@ -427,6 +490,8 @@ def build_message(token):
     if s: sections.append(s)
     s = section_calendar(upcoming)
     if s: sections.append(s)
+    s = section_classics_warning(upcoming, full_table)
+    if s: sections.append(s)
 
     if len(sections) == 1:  # so o header
         sections.append(u"Sem novidades hoje. É hora de descansar, Mengão.")
@@ -436,10 +501,14 @@ def build_message(token):
 
 
 def send_whatsapp(phone, apikey, message):
-    params = {"phone": phone, "text": message, "apikey": apikey}
+    """Envia via CallMeBot usando POST (evita truncamento de URL para mensagens longas)."""
+    # Tamanho seguro: WhatsApp aceita ~4000 chars; o boletim costuma ter 1500-2000.
+    # GET na query string trunca em ~2000 bytes URL-encoded — por isso o '%' no fim.
+    # Solucao: enviar phone+apikey na query (sao curtos) e o text no corpo via POST.
+    params = {"phone": phone, "apikey": apikey}
     url = "{}?{}".format(CALLMEBOT_URL, urllib.parse.urlencode(params))
-    resp = requests.get(url, timeout=30)
-    print("CallMeBot status={}".format(resp.status_code))
+    resp = requests.post(url, data={"text": message}, timeout=30)
+    print("CallMeBot status={} msg_len={}".format(resp.status_code, len(message)))
     print("CallMeBot body={}".format(resp.text[:500]))
     resp.raise_for_status()
 
