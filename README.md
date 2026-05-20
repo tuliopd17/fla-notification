@@ -3,9 +3,14 @@
 Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 
 **O que vem na mensagem:**
-- 📊 Último resultado (com placar e indicação de vitória/empate/derrota)
-- ⏰ Próximo jogo (com destaque especial se for HOJE)
-- 📋 Posição na tabela do Brasileirão (lugar, pontos, V/E/D, saldo de gols)
+- 📊 Último resultado (com placar e tag de vitória/empate/derrota)
+- 📈 Forma recente — série dos últimos 5 jogos (✅✅➖❌✅)
+- ⏰ Próximo jogo (com destaque "🔥 HOJE TEM MENGÃO!" quando for hoje)
+- 📋 Brasileirão completo — posição, pontos, V/E/D, saldo, gols pró/contra
+- 📈 Distância pro líder + zona da tabela (G4 Libertadores, G6, Sul-Americana, Z4)
+- 🌎 Competições ativas (Libertadores, Copa do Brasil quando entrar)
+- 👨 Técnico atual
+- 📅 Próximos 3 jogos no calendário
 
 **Custo:** zero. Roda no GitHub Actions (cron gratuito), busca dados na Football-Data.org (free tier, só pede email) e envia via CallMeBot (gratuito).
 
@@ -15,7 +20,7 @@ Não precisa deixar nada ligado no seu computador.
 
 ## Como funciona
 
-Todo dia às **09:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
+Todo dia às **08:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
 
 1. Busca o último resultado e o próximo jogo do Flamengo na Football-Data.org.
 2. Puxa a tabela atualizada do Brasileirão.
@@ -74,7 +79,7 @@ No GitHub: **Actions → Flamengo Daily Briefing → Run workflow**.
 
 Se quiser só ver no log sem enviar WhatsApp, marque **`dry_run = 1`**. Caso contrário, deixe `0` e você já recebe o boletim de hoje.
 
-Pronto. Daqui pra frente roda automático todo dia às 9h.
+Pronto. Daqui pra frente roda automático todo dia às 8h.
 
 ---
 
@@ -83,10 +88,12 @@ Pronto. Daqui pra frente roda automático todo dia às 9h.
 **Horário do aviso:** edite o cron em `.github/workflows/flamengo-notifier.yml`. Lembre que o GitHub usa UTC (BRT = UTC−3).
 
 ```yaml
+- cron: "0 11 * * *"   # 08:00 BRT (atual)
 - cron: "0 12 * * *"   # 09:00 BRT
-- cron: "0 10 * * *"   # 07:00 BRT
-- cron: "30 11 * * *"  # 08:30 BRT
+- cron: "30 10 * * *"  # 07:30 BRT
 ```
+
+Obs: o cron do GitHub Actions é *best-effort* — em horários de pico pode atrasar 1–15 minutos. Em geral chega entre 08:00 e 08:05 BRT.
 
 **Quer um lembrete extra perto do kickoff?** Dá pra adicionar uma segunda execução no cron que dispara só se houver jogo nas próximas 2h. Me avisa que eu faço.
 

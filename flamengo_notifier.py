@@ -2,14 +2,15 @@
 """
 Flamengo Daily Briefing
 -----------------------
-Boletim diario sobre o Flamengo, enviado por WhatsApp via CallMeBot.
-Dados: Football-Data.org v4 (free tier, requer token gratuito).
+Boletim diario completo sobre o Mengao, via WhatsApp (CallMeBot).
+Dados: Football-Data.org v4 (free tier).
 
-A API foi confirmada via probe:
-  - Brasileirao Serie A (BSA) acessivel no free tier (TIER_ONE)
-  - Flamengo: id=1783, shortName='Flamengo'
-  - Matches expostos com homeTeam, awayTeam, score.fullTime, utcDate, competition
-  - Standings com position, points, playedGames, won/draw/lost, goalDifference
+Secoes:
+  - Ultimo resultado + forma recente (ultimos 5)
+  - Proximo jogo (com destaque HOJE TEM MENGAO)
+  - Tabela do Brasileirao + distancia pro lider + zona de classificacao
+  - Competicoes ativas + tecnico
+  - Calendario dos proximos 3 jogos
 
 Variaveis de ambiente:
     FOOTBALL_DATA_TOKEN -> token de https://www.football-data.org/client/register
@@ -36,7 +37,7 @@ BR_TZ = timezone(timedelta(hours=-3))
 
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
-# Emojis em escape Unicode (alguns como literal por ja terem funcionado)
+# Emojis
 E_RUBRO = "\U0001F534" + "⚫"
 E_CLOCK = "⏰"
 E_CUP   = "\U0001F3C6"
@@ -44,8 +45,17 @@ E_PIN   = "\U0001F4CD"
 E_FIRE  = "\U0001F525"
 E_CHART = "\U0001F4CA"
 E_NOTE  = "\U0001F4CB"
+E_CAL   = "\U0001F4C5"           # calendario
+E_TREND = "\U0001F4C8"           # grafico subindo
+E_BALL  = "⚽"
+E_GLOBE = "\U0001F30E"           # globo (Libertadores)
+E_COACH = "\U0001F468"           # pessoa (tecnico)
+E_OK    = "✅"
+E_X     = "❌"
+E_DRAW  = "➖"
 
 DIAS_PT = ["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]
+DIAS_PT_SHORT = ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]
 MESES_PT = ["", "jan", "fev", "mar", "abr", "mai", "jun",
             "jul", "ago", "set", "out", "nov", "dez"]
 
@@ -57,7 +67,6 @@ def now_br():
 
 
 def parse_utc_iso(s):
-    """ISO-8601 UTC (ex '2026-05-20T22:00:00Z') -> datetime em BR. None se falhar."""
     if not s:
         return None
     try:
@@ -85,6 +94,14 @@ def format_short_date(dt):
     return u"{}/{}".format(dt.strftime("%d"), MESES_PT[dt.month])
 
 
+def format_calendar_line(dt):
+    """'QUA 20/05 21:30' -- formato compacto pro calendario."""
+    if dt is None:
+        return "? data ?"
+    dia = DIAS_PT_SHORT[dt.weekday()]
+    return u"{} {}/{} {}".format(dia, dt.strftime("%d"), dt.strftime("%m"), dt.strftime("%H:%M"))
+
+
 # ---------- chamadas Football-Data ----------
 
 def fd_get(path, token, params=None, timeout=25):
@@ -92,58 +109,69 @@ def fd_get(path, token, params=None, timeout=25):
     resp = requests.get(url, headers={"X-Auth-Token": token},
                         params=params or {}, timeout=timeout)
     if resp.status_code == 429:
-        raise RuntimeError("Football-Data: rate limit atingido (free tier: 10 req/min)")
+        raise RuntimeError("Football-Data: rate limit (10 req/min free tier)")
     if resp.status_code == 403:
-        raise RuntimeError("Football-Data: token invalido ou recurso fora do plano")
+        raise RuntimeError("Football-Data: 403 (token invalido ou recurso pago)")
     resp.raise_for_status()
     return resp.json() or {}
 
 
-def fetch_last_match(token):
-    """Ultima partida finalizada do Flamengo (qualquer competicao).
-
-    NAO usar limit=1: a API trunca antes de ordenar, retornando jogo errado.
-    Pegamos todos os FINISHED e ordenamos cronologicamente.
-    """
+def fetch_recent_finished(token, n=5):
+    """Devolve os N jogos FINISHED mais recentes, em ordem cronologica
+    crescente (do mais antigo pro mais recente — facilita 'forma recente')."""
     data = fd_get("/teams/{}/matches".format(FLAMENGO_ID), token,
                   {"status": "FINISHED"})
     matches = data.get("matches") or []
     matches.sort(key=lambda m: m.get("utcDate") or "")
-    return matches[-1] if matches else None
+    return matches[-n:] if matches else []
 
 
-def fetch_next_match(token):
-    """Proxima partida agendada do Flamengo (qualquer competicao).
-
-    Inclui Brasileirao E Libertadores (a API expoe ambos no /teams/matches).
-    NAO usar limit=1: trunca antes de ordenar (testado: retornava jogo de dezembro
-    em vez do amanha). Ordenamos manualmente por utcDate.
-    """
+def fetch_upcoming(token, n=5):
+    """Devolve os N proximos jogos SCHEDULED/TIMED, ordem crescente."""
     data = fd_get("/teams/{}/matches".format(FLAMENGO_ID), token,
                   {"status": "SCHEDULED,TIMED"})
     matches = data.get("matches") or []
     matches.sort(key=lambda m: m.get("utcDate") or "")
-    return matches[0] if matches else None
+    return matches[:n]
 
 
-def fetch_brasileirao_standing(token):
-    """Devolve a linha do Flamengo na tabela do Brasileirao, ou None."""
+def fetch_brasileirao_standings(token):
+    """Devolve a tabela inteira do Brasileirao (lista de linhas) e a linha do Flamengo.
+
+    Retorna (linha_flamengo, tabela_inteira) — None se falhar.
+    """
     try:
         data = fd_get("/competitions/{}/standings".format(BRASILEIRAO_CODE), token)
     except Exception as e:
-        print("AVISO: nao consegui buscar tabela do Brasileirao: {}".format(e))
-        return None
+        print("AVISO: nao consegui buscar tabela: {}".format(e))
+        return None, None
     for s in data.get("standings") or []:
         if s.get("type") != "TOTAL":
             continue
-        for row in s.get("table") or []:
-            team = row.get("team") or {}
-            if team.get("id") == FLAMENGO_ID:
-                return row
-    return None
+        table = s.get("table") or []
+        fla_row = None
+        for row in table:
+            if (row.get("team") or {}).get("id") == FLAMENGO_ID:
+                fla_row = row
+                break
+        return fla_row, table
+    return None, None
 
 
-# ---------- montagem ----------
+def fetch_team_info(token):
+    """Info do time: tecnico e competicoes em andamento. Retorna dict ou None."""
+    try:
+        data = fd_get("/teams/{}".format(FLAMENGO_ID), token)
+    except Exception as e:
+        print("AVISO: nao consegui buscar info do time: {}".format(e))
+        return None
+    return {
+        "coach": (data.get("coach") or {}).get("name"),
+        "running_competitions": [c.get("name") for c in data.get("runningCompetitions") or [] if c.get("name")],
+    }
+
+
+# ---------- helpers ----------
 
 def _name(side):
     if not side:
@@ -155,37 +183,91 @@ def _is_fla(side):
     return bool(side) and side.get("id") == FLAMENGO_ID
 
 
-def build_last_result_section(match):
-    if not match:
-        return None
-    home = match.get("homeTeam") or {}
-    away = match.get("awayTeam") or {}
-    score = (match.get("score") or {}).get("fullTime") or {}
-    sh = score.get("home")
-    sa = score.get("away")
+def _match_outcome_for_fla(m):
+    """Retorna 'V', 'E', 'D' ou None pro Flamengo nesse jogo."""
+    score = (m.get("score") or {}).get("fullTime") or {}
+    sh, sa = score.get("home"), score.get("away")
     if sh is None or sa is None:
         return None
-    comp = (match.get("competition") or {}).get("name") or ""
-    kickoff = parse_utc_iso(match.get("utcDate"))
+    if _is_fla(m.get("homeTeam")):
+        if sh > sa: return "V"
+        if sh < sa: return "D"
+        return "E"
+    if _is_fla(m.get("awayTeam")):
+        if sa > sh: return "V"
+        if sa < sh: return "D"
+        return "E"
+    return None
+
+
+def _zona_brasileirao(pos):
+    """Devolve string descritiva da zona (Libertadores / Sul-Am / nada / Z4)."""
+    if pos is None:
+        return ""
+    try:
+        p = int(pos)
+    except (TypeError, ValueError):
+        return ""
+    if 1 <= p <= 4:
+        return u"\U0001F30E zona de Libertadores (G4)"
+    if 5 <= p <= 6:
+        return u"\U0001F3C6 pré-Libertadores (G6)"
+    if 7 <= p <= 12:
+        return u"🇸 zona de Sul-Americana"
+    if 13 <= p <= 16:
+        return u"meio de tabela"
+    if 17 <= p <= 20:
+        return u"⚠️ zona de rebaixamento (Z4)"
+    return ""
+
+
+# ---------- secoes do boletim ----------
+
+def section_last_and_form(recent_matches):
+    """Junta 'ultimo resultado' + 'forma recente'."""
+    if not recent_matches:
+        return None
+    last = recent_matches[-1]
+    score = (last.get("score") or {}).get("fullTime") or {}
+    sh, sa = score.get("home"), score.get("away")
+    if sh is None or sa is None:
+        return None
+
+    home = last.get("homeTeam") or {}
+    away = last.get("awayTeam") or {}
+    comp = (last.get("competition") or {}).get("name") or ""
+    kickoff = parse_utc_iso(last.get("utcDate"))
     date_str = format_short_date(kickoff)
 
     placar = u"{} {} x {} {}".format(_name(home), sh, _name(away), sa)
-    if _is_fla(home):
-        tag = u"✅ vitória" if sh > sa else (u"❌ derrota" if sh < sa else u"➖ empate")
-    elif _is_fla(away):
-        tag = u"✅ vitória" if sa > sh else (u"❌ derrota" if sa < sh else u"➖ empate")
-    else:
-        tag = ""
+    outcome = _match_outcome_for_fla(last)
+    tag = ""
+    if outcome == "V": tag = u"{} vitória".format(E_OK)
+    elif outcome == "D": tag = u"{} derrota".format(E_X)
+    elif outcome == "E": tag = u"{} empate".format(E_DRAW)
 
     lines = [u"{} *Último resultado*".format(E_CHART)]
-    head = placar + (u"  ({})".format(tag) if tag else "")
-    lines.append(head)
+    lines.append(placar + (u"  ({})".format(tag) if tag else ""))
     if comp:
         lines.append(u"{} • {}".format(comp, date_str))
+
+    # Forma recente (todos os jogos do recent_matches, em ordem)
+    if len(recent_matches) >= 2:
+        emojis = []
+        v = e = d = 0
+        for m in recent_matches:
+            o = _match_outcome_for_fla(m)
+            if o == "V": emojis.append(E_OK); v += 1
+            elif o == "E": emojis.append(E_DRAW); e += 1
+            elif o == "D": emojis.append(E_X); d += 1
+        if emojis:
+            lines.append("")
+            lines.append(u"{} *Forma recente:* {}".format(E_TREND, "".join(emojis)))
+            lines.append(u"   ({}V {}E {}D nos últimos {})".format(v, e, d, len(emojis)))
     return "\n".join(lines)
 
 
-def build_next_match_section(match):
+def section_next_match(match):
     if not match:
         return None
     kickoff = parse_utc_iso(match.get("utcDate"))
@@ -203,68 +285,150 @@ def build_next_match_section(match):
 
     lines = [header, format_event_datetime(kickoff),
              u"{} x {}".format(_name(home), _name(away))]
-    foot_bits = []
     if comp:
-        comp_full = comp
+        suffix = ""
         if matchday:
-            comp_full += u" — Rod. {}".format(matchday)
+            suffix = u" — Rod. {}".format(matchday)
         elif stage and stage != "REGULAR_SEASON":
-            comp_full += u" — {}".format(stage.replace("_", " ").title())
-        foot_bits.append(u"{} {}".format(E_CUP, comp_full))
-    if foot_bits:
-        lines.append(u" • ".join(foot_bits))
+            suffix = u" — {}".format(stage.replace("_", " ").title())
+        lines.append(u"{} {}{}".format(E_CUP, comp, suffix))
     return "\n".join(lines)
 
 
-def build_standing_section(row):
-    if not row:
+def section_standings(fla_row, full_table):
+    if not fla_row:
         return None
-    pos = row.get("position", "?")
-    pts = row.get("points", "?")
-    played = row.get("playedGames", "?")
-    wins = row.get("won", "?")
-    draws = row.get("draw", "?")
-    losses = row.get("lost", "?")
-    gd = row.get("goalDifference")
-    gd_str = u""
-    if gd is not None:
-        sign = "+" if gd >= 0 else ""
-        gd_str = u" • SG {}{}".format(sign, gd)
-    lines = [u"{} *Situação no Brasileirão*".format(E_NOTE)]
-    lines.append(u"{} {}º lugar • {} pts em {} jogos ({}V {}E {}D){}".format(
-        E_CUP, pos, pts, played, wins, draws, losses, gd_str))
+    pos = fla_row.get("position")
+    pts = fla_row.get("points")
+    played = fla_row.get("playedGames")
+    wins = fla_row.get("won")
+    draws = fla_row.get("draw")
+    losses = fla_row.get("lost")
+    gd = fla_row.get("goalDifference")
+    gf = fla_row.get("goalsFor")
+    ga = fla_row.get("goalsAgainst")
+
+    lines = [u"{} *Brasileirão*".format(E_NOTE)]
+    lines.append(u"{} {}º lugar • {} pts em {} jogos ({}V {}E {}D)".format(
+        E_CUP, pos, pts, played, wins, draws, losses))
+    if gf is not None and ga is not None and gd is not None:
+        sg = "+{}".format(gd) if gd >= 0 else str(gd)
+        lines.append(u"{} {} gols pró • {} contra • SG {}".format(E_BALL, gf, ga, sg))
+
+    # Distancia pro lider
+    if full_table:
+        leader = None
+        for row in full_table:
+            if row.get("position") == 1:
+                leader = row
+                break
+        if leader and leader.get("team", {}).get("id") != FLAMENGO_ID:
+            lead_pts = leader.get("points")
+            lead_name = _name(leader.get("team") or {})
+            try:
+                diff = lead_pts - pts
+                lines.append(u"{} A {} pt(s) do líder ({} — {})".format(
+                    E_TREND, diff, lead_name, lead_pts))
+            except (TypeError, ValueError):
+                pass
+        elif leader and leader.get("team", {}).get("id") == FLAMENGO_ID:
+            # Flamengo eh o lider
+            second_pts = None
+            for row in full_table:
+                if row.get("position") == 2:
+                    second_pts = row.get("points")
+                    break
+            if second_pts is not None:
+                try:
+                    lines.append(u"{} LÍDER, {} pt(s) à frente do 2º".format(E_FIRE, pts - second_pts))
+                except (TypeError, ValueError):
+                    pass
+
+    zona = _zona_brasileirao(pos)
+    if zona:
+        lines.append(u"   {}".format(zona))
     return "\n".join(lines)
 
+
+def section_team_info(team_info):
+    if not team_info:
+        return None
+    parts = []
+    running = team_info.get("running_competitions") or []
+    # Filtra para excluir o Brasileirao (ja tem secao propria)
+    other_comps = [c for c in running if "brasileiro" not in c.lower() and "serie a" not in c.lower()]
+    if other_comps:
+        parts.append(u"{} *Competições ativas*".format(E_GLOBE))
+        for c in other_comps:
+            parts.append(u"{} {}".format(E_CUP, c))
+    coach = team_info.get("coach")
+    if coach:
+        if parts:
+            parts.append("")
+        parts.append(u"{} *Técnico:* {}".format(E_COACH, coach))
+    return "\n".join(parts) if parts else None
+
+
+def section_calendar(upcoming):
+    """Lista compacta dos proximos jogos. O 1o ja apareceu como 'proximo jogo',
+    entao aqui mostramos do 2o em diante (ate 3 total)."""
+    if not upcoming or len(upcoming) < 2:
+        return None
+    rest = upcoming[1:4]  # ate 3 jogos extras
+    if not rest:
+        return None
+    lines = [u"{} *Próximos jogos*".format(E_CAL)]
+    for m in rest:
+        kickoff = parse_utc_iso(m.get("utcDate"))
+        home = _name(m.get("homeTeam"))
+        away = _name(m.get("awayTeam"))
+        comp = (m.get("competition") or {}).get("name") or ""
+        comp_short = comp
+        if "brasileiro" in comp.lower() or "serie a" in comp.lower():
+            comp_short = "Brasileirão"
+        elif "libertadores" in comp.lower():
+            comp_short = "Libertadores"
+        elif "copa do brasil" in comp.lower():
+            comp_short = "Copa do Brasil"
+        lines.append(u"• {} — {} x {} ({})".format(
+            format_calendar_line(kickoff), home, away, comp_short))
+    return "\n".join(lines)
+
+
+# ---------- montagem ----------
 
 def build_message(token):
     today_label = now_br().strftime("%d/%m/%Y")
     dia_semana = DIAS_PT[now_br().weekday()]
     header = u"{} *Boletim do Mengão* — {}, {}".format(E_RUBRO, dia_semana, today_label)
 
+    # 4 chamadas a API — bem abaixo do limite de 10/min
     try:
-        last = fetch_last_match(token)
+        recent = fetch_recent_finished(token, n=5)
     except Exception as e:
-        print("AVISO: falha em fetch_last_match: {}".format(e))
-        last = None
+        print("AVISO: fetch_recent_finished: {}".format(e))
+        recent = []
     try:
-        nxt = fetch_next_match(token)
+        upcoming = fetch_upcoming(token, n=5)
     except Exception as e:
-        print("AVISO: falha em fetch_next_match: {}".format(e))
-        nxt = None
-    standing = fetch_brasileirao_standing(token)
+        print("AVISO: fetch_upcoming: {}".format(e))
+        upcoming = []
+    fla_row, full_table = fetch_brasileirao_standings(token)
+    team_info = fetch_team_info(token)
 
     sections = [header]
-    s_last = build_last_result_section(last)
-    if s_last:
-        sections.append(s_last)
-    s_next = build_next_match_section(nxt)
-    if s_next:
-        sections.append(s_next)
-    s_stand = build_standing_section(standing)
-    if s_stand:
-        sections.append(s_stand)
+    s = section_last_and_form(recent)
+    if s: sections.append(s)
+    s = section_next_match(upcoming[0] if upcoming else None)
+    if s: sections.append(s)
+    s = section_standings(fla_row, full_table)
+    if s: sections.append(s)
+    s = section_team_info(team_info)
+    if s: sections.append(s)
+    s = section_calendar(upcoming)
+    if s: sections.append(s)
 
-    if not s_last and not s_next and not s_stand:
+    if len(sections) == 1:  # so o header
         sections.append(u"Sem novidades hoje. É hora de descansar, Mengão.")
 
     sections.append(u"VAMO MENGÃO! {}".format(E_FIRE))
@@ -292,7 +456,7 @@ def main():
         "CALLMEBOT_APIKEY": apikey,
     }.items() if not v]
     if missing:
-        print("ERRO: variaveis de ambiente faltando: {}".format(", ".join(missing)), file=sys.stderr)
+        print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
     msg = build_message(token)

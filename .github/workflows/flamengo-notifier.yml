@@ -2,8 +2,9 @@ name: Flamengo Daily Briefing
 
 on:
   schedule:
-    # 09:00 BRT = 12:00 UTC. Boletim diario sobre o Mengao.
-    - cron: "0 12 * * *"
+    # 08:00 BRT = 11:00 UTC. Boletim diario sobre o Mengao.
+    # Obs: GitHub Actions cron e' best-effort, pode atrasar 1-15min em horarios de pico.
+    - cron: "0 11 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
