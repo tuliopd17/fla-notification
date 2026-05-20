@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Apenas imprimir, sem enviar WhatsApp"
+        description: "1 = nao envia WhatsApp, so imprime"
         required: false
         default: "0"
 
@@ -29,6 +29,7 @@ jobs:
 
       - name: Run notifier
         env:
+          FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}

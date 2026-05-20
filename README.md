@@ -5,9 +5,9 @@ Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 **O que vem na mensagem:**
 - 📊 Último resultado (com placar e indicação de vitória/empate/derrota)
 - ⏰ Próximo jogo (com destaque especial se for HOJE)
-- 📋 Situação nas competições (posição no Brasileirão, fase em mata-matas, ligas ativas)
+- 📋 Posição na tabela do Brasileirão (lugar, pontos, V/E/D, saldo de gols)
 
-**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca dados na TheSportsDB (gratuita, sem chave) e envia via CallMeBot (gratuito).
+**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca dados na Football-Data.org (free tier, só pede email) e envia via CallMeBot (gratuito).
 
 Não precisa deixar nada ligado no seu computador.
 
@@ -17,8 +17,8 @@ Não precisa deixar nada ligado no seu computador.
 
 Todo dia às **09:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
 
-1. Busca os próximos e últimos jogos do Flamengo na TheSportsDB.
-2. Puxa a tabela do Brasileirão e identifica as competições em que o time está.
+1. Busca o último resultado e o próximo jogo do Flamengo na Football-Data.org.
+2. Puxa a tabela atualizada do Brasileirão.
 3. Monta o boletim do dia e envia no seu WhatsApp via CallMeBot.
 
 Você recebe **1 mensagem por dia, sempre**. Em dia de jogo o boletim destaca "HOJE TEM MENGÃO!".
@@ -36,14 +36,18 @@ Você recebe **1 mensagem por dia, sempre**. Em dia de jogo o boletim destaca "H
 
 > Documentação oficial: https://www.callmebot.com/blog/free-api-whatsapp-messages/
 
-### 2. API de futebol
+### 2. Token da Football-Data.org
 
-Não precisa de nada. Usamos a [TheSportsDB](https://www.thesportsdb.com/), que é totalmente gratuita e não exige cadastro ou chave de API. O Flamengo tem ID fixo `134301` lá.
+1. Acesse https://www.football-data.org/client/register
+2. Preencha email + nome (não pede cartão, não pede telefone). Marque "Personal" como caso de uso.
+3. Na hora você recebe um email com seu **API token**. Guarde.
+
+Free tier: 10 requisições/minuto. O boletim faz 3 por dia — está folgado.
 
 ### 3. Subir esse projeto no GitHub
 
 ```bash
-cd "C:\Users\tulio\OneDrive\Documentos\Claude\Projects\FlaApp"
+cd "C:\Users\tulio\projetos-pessoais\FlaApp"
 git init
 git add .
 git commit -m "Flamengo notifier inicial"
@@ -56,10 +60,11 @@ gh repo create flamengo-notifier --private --source=. --push
 
 No repo no GitHub: **Settings → Secrets and variables → Actions → New repository secret**.
 
-Crie estes dois:
+Crie estes três:
 
 | Nome                  | Valor                                                |
 |-----------------------|------------------------------------------------------|
+| `FOOTBALL_DATA_TOKEN` | o token que veio no email da Football-Data.org       |
 | `CALLMEBOT_PHONE`     | seu número, ex: `5521988887777` (sem `+`, sem espaço)|
 | `CALLMEBOT_APIKEY`    | a apikey que o CallMeBot te mandou                   |
 
@@ -85,7 +90,7 @@ Pronto. Daqui pra frente roda automático todo dia às 9h.
 
 **Quer um lembrete extra perto do kickoff?** Dá pra adicionar uma segunda execução no cron que dispara só se houver jogo nas próximas 2h. Me avisa que eu faço.
 
-**Quer placar quase em tempo real (notificação no fim do jogo)?** A TheSportsDB tem endpoint de eventos ao vivo (`/eventslivescore.php`). Posso adicionar um job que roda a cada 30min só nos dias de jogo.
+**Quer cobertura de Libertadores/Copa do Brasil?** O free tier da Football-Data não cobre essas competições. Para incluí-las, ou pagamos o plano TIER_TWO (~$10/mês) ou complementamos com scraping pontual. Avise se quiser.
 
 ---
 

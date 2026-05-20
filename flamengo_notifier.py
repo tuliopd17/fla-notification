@@ -3,17 +3,19 @@
 Flamengo Daily Briefing
 -----------------------
 Boletim diario sobre o Flamengo, enviado por WhatsApp via CallMeBot.
-Dados: TheSportsDB (gratuita, sem chave).
+Dados: Football-Data.org v4 (free tier, requer token gratuito).
 
-Contem:
-  - Ultimo resultado
-  - Proximo jogo (com destaque se for HOJE)
-  - Situacao nas competicoes ativas (posicao no Brasileirao, fase de mata-matas)
+A API foi confirmada via probe:
+  - Brasileirao Serie A (BSA) acessivel no free tier (TIER_ONE)
+  - Flamengo: id=1783, shortName='Flamengo'
+  - Matches expostos com homeTeam, awayTeam, score.fullTime, utcDate, competition
+  - Standings com position, points, playedGames, won/draw/lost, goalDifference
 
 Variaveis de ambiente:
-    CALLMEBOT_PHONE   -> seu numero internacional, ex: 5521999999999
-    CALLMEBOT_APIKEY  -> apikey gerada pelo CallMeBot
-    DRY_RUN           -> (opcional) "1" imprime mas nao envia
+    FOOTBALL_DATA_TOKEN -> token de https://www.football-data.org/client/register
+    CALLMEBOT_PHONE     -> seu numero internacional, ex: 5521999999999
+    CALLMEBOT_APIKEY    -> apikey gerada pelo CallMeBot
+    DRY_RUN             -> (opcional) "1" imprime mas nao envia
 """
 
 from __future__ import annotations
@@ -25,25 +27,16 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-# ATENCAO: nao usar ID hardcoded. O 134301 e' do AFC Bournemouth.
-# Resolvemos o ID dinamicamente filtrando por nome+pais.
-FLAMENGO_NAME = "Flamengo"
-FLAMENGO_COUNTRY = "Brazil"
-BRASILEIRAO_ID = "4351"
-
-# Cache resolvido em runtime
-_FLAMENGO_ID_CACHE = None
+# Football-Data.org
+FD_BASE = "https://api.football-data.org/v4"
+FLAMENGO_ID = 1783                  # CR Flamengo (Rio de Janeiro)
+BRASILEIRAO_CODE = "BSA"            # Campeonato Brasileiro Serie A
 
 BR_TZ = timezone(timedelta(hours=-3))
 
-SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json/3"
-SPORTSDB_NEXT = SPORTSDB_BASE + "/eventsnext.php"
-SPORTSDB_LAST = SPORTSDB_BASE + "/eventslast.php"
-SPORTSDB_TABLE = SPORTSDB_BASE + "/lookuptable.php"
-SPORTSDB_SEARCH = SPORTSDB_BASE + "/searchteams.php"
-
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
+# Emojis em escape Unicode (alguns como literal por ja terem funcionado)
 E_RUBRO = "\U0001F534" + "⚫"
 E_CLOCK = "⏰"
 E_CUP   = "\U0001F3C6"
@@ -57,31 +50,21 @@ MESES_PT = ["", "jan", "fev", "mar", "abr", "mai", "jun",
             "jul", "ago", "set", "out", "nov", "dez"]
 
 
+# ---------- utilidades ----------
+
 def now_br():
     return datetime.now(BR_TZ)
 
 
-def today_br_str():
-    return now_br().strftime("%Y-%m-%d")
-
-
-def parse_event_kickoff(ev):
-    ts = ev.get("strTimestamp")
-    if ts:
-        try:
-            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            return dt.astimezone(BR_TZ)
-        except ValueError:
-            pass
-    date_ev = ev.get("dateEvent")
-    time_ev = ev.get("strTime") or "00:00:00"
-    if date_ev:
-        try:
-            dt = datetime.strptime(date_ev + " " + time_ev, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            return dt.astimezone(BR_TZ)
-        except ValueError:
-            return None
-    return None
+def parse_utc_iso(s):
+    """ISO-8601 UTC (ex '2026-05-20T22:00:00Z') -> datetime em BR. None se falhar."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(BR_TZ)
+    except ValueError:
+        return None
 
 
 def format_event_datetime(dt):
@@ -102,124 +85,115 @@ def format_short_date(dt):
     return u"{}/{}".format(dt.strftime("%d"), MESES_PT[dt.month])
 
 
-def _http_get_json(url, params, timeout=20):
-    resp = requests.get(url, params=params, timeout=timeout)
+# ---------- chamadas Football-Data ----------
+
+def fd_get(path, token, params=None, timeout=25):
+    url = FD_BASE + path
+    resp = requests.get(url, headers={"X-Auth-Token": token},
+                        params=params or {}, timeout=timeout)
+    if resp.status_code == 429:
+        raise RuntimeError("Football-Data: rate limit atingido (free tier: 10 req/min)")
+    if resp.status_code == 403:
+        raise RuntimeError("Football-Data: token invalido ou recurso fora do plano")
     resp.raise_for_status()
     return resp.json() or {}
 
 
-def resolve_flamengo_id():
-    """Descobre o idTeam do Flamengo (RJ) na TheSportsDB.
+def fetch_last_match(token):
+    """Ultima partida finalizada do Flamengo (qualquer competicao).
 
-    Buscamos pelo nome e filtramos por pais=Brazil + esporte=Soccer pra evitar
-    pegar o AFC Bournemouth (que se chama Bournemouth mas a busca por
-    'Flamengo' tambem retorna times homonimos do exterior em alguns casos).
+    NAO usar limit=1: a API trunca antes de ordenar, retornando jogo errado.
+    Pegamos todos os FINISHED e ordenamos cronologicamente.
     """
-    global _FLAMENGO_ID_CACHE
-    if _FLAMENGO_ID_CACHE:
-        return _FLAMENGO_ID_CACHE
-    data = _http_get_json(SPORTSDB_SEARCH, {"t": FLAMENGO_NAME})
-    teams = data.get("teams") or []
-    # Priorizar Flamengo do RJ: nome exato + Brazil + Soccer
-    for t in teams:
-        name = (t.get("strTeam") or "").strip().lower()
-        country = (t.get("strCountry") or "").strip().lower()
-        sport = (t.get("strSport") or "").strip().lower()
-        if name == "flamengo" and country == "brazil" and sport == "soccer":
-            _FLAMENGO_ID_CACHE = t.get("idTeam")
-            print("Flamengo resolvido: idTeam={}".format(_FLAMENGO_ID_CACHE))
-            return _FLAMENGO_ID_CACHE
-    # Fallback: qualquer time brasileiro chamado Flamengo
-    for t in teams:
-        country = (t.get("strCountry") or "").strip().lower()
-        if country == "brazil":
-            _FLAMENGO_ID_CACHE = t.get("idTeam")
-            print("Flamengo (fallback BR) resolvido: idTeam={}".format(_FLAMENGO_ID_CACHE))
-            return _FLAMENGO_ID_CACHE
-    raise RuntimeError("Nao consegui resolver o idTeam do Flamengo RJ. Resposta: {}".format(teams[:2]))
+    data = fd_get("/teams/{}/matches".format(FLAMENGO_ID), token,
+                  {"status": "FINISHED"})
+    matches = data.get("matches") or []
+    matches.sort(key=lambda m: m.get("utcDate") or "")
+    return matches[-1] if matches else None
 
 
-def fetch_next_events():
-    data = _http_get_json(SPORTSDB_NEXT, {"id": resolve_flamengo_id()})
-    return data.get("events") or []
+def fetch_next_match(token):
+    """Proxima partida agendada do Flamengo (qualquer competicao).
+
+    Inclui Brasileirao E Libertadores (a API expoe ambos no /teams/matches).
+    NAO usar limit=1: trunca antes de ordenar (testado: retornava jogo de dezembro
+    em vez do amanha). Ordenamos manualmente por utcDate.
+    """
+    data = fd_get("/teams/{}/matches".format(FLAMENGO_ID), token,
+                  {"status": "SCHEDULED,TIMED"})
+    matches = data.get("matches") or []
+    matches.sort(key=lambda m: m.get("utcDate") or "")
+    return matches[0] if matches else None
 
 
-def fetch_last_events():
-    data = _http_get_json(SPORTSDB_LAST, {"id": resolve_flamengo_id()})
-    return data.get("results") or data.get("events") or []
-
-
-def fetch_brasileirao_table():
-    season = str(now_br().year)
+def fetch_brasileirao_standing(token):
+    """Devolve a linha do Flamengo na tabela do Brasileirao, ou None."""
     try:
-        data = _http_get_json(SPORTSDB_TABLE, {"l": BRASILEIRAO_ID, "s": season})
+        data = fd_get("/competitions/{}/standings".format(BRASILEIRAO_CODE), token)
     except Exception as e:
-        print("AVISO: nao consegui buscar tabela do Brasileirao ({}): {}".format(season, e))
+        print("AVISO: nao consegui buscar tabela do Brasileirao: {}".format(e))
         return None
-    table = data.get("table") or []
-    for row in table:
-        name = (row.get("strTeam") or "").lower()
-        if "flamengo" in name:
-            return row
+    for s in data.get("standings") or []:
+        if s.get("type") != "TOTAL":
+            continue
+        for row in s.get("table") or []:
+            team = row.get("team") or {}
+            if team.get("id") == FLAMENGO_ID:
+                return row
     return None
 
 
-def is_flamengo(team_name):
-    return "flamengo" in (team_name or "").lower()
+# ---------- montagem ----------
+
+def _name(side):
+    if not side:
+        return "?"
+    return side.get("shortName") or side.get("name") or "?"
 
 
-def build_last_result_section(last_events):
-    if not last_events:
+def _is_fla(side):
+    return bool(side) and side.get("id") == FLAMENGO_ID
+
+
+def build_last_result_section(match):
+    if not match:
         return None
-    ev = last_events[0]
-    home = ev.get("strHomeTeam") or "?"
-    away = ev.get("strAwayTeam") or "?"
-    score_h = ev.get("intHomeScore")
-    score_a = ev.get("intAwayScore")
-    league = ev.get("strLeague") or ""
-    venue = ev.get("strVenue") or ""
-    kickoff = parse_event_kickoff(ev)
+    home = match.get("homeTeam") or {}
+    away = match.get("awayTeam") or {}
+    score = (match.get("score") or {}).get("fullTime") or {}
+    sh = score.get("home")
+    sa = score.get("away")
+    if sh is None or sa is None:
+        return None
+    comp = (match.get("competition") or {}).get("name") or ""
+    kickoff = parse_utc_iso(match.get("utcDate"))
     date_str = format_short_date(kickoff)
 
-    if score_h is None or score_a is None:
-        return None
-
-    placar = u"{} {} x {} {}".format(home, score_h, away, score_a)
-    try:
-        sh = int(score_h)
-        sa = int(score_a)
-        if is_flamengo(home):
-            tag = u"✅ vitória" if sh > sa else (u"❌ derrota" if sh < sa else u"➖ empate")
-        elif is_flamengo(away):
-            tag = u"✅ vitória" if sa > sh else (u"❌ derrota" if sa < sh else u"➖ empate")
-        else:
-            tag = ""
-    except (TypeError, ValueError):
+    placar = u"{} {} x {} {}".format(_name(home), sh, _name(away), sa)
+    if _is_fla(home):
+        tag = u"✅ vitória" if sh > sa else (u"❌ derrota" if sh < sa else u"➖ empate")
+    elif _is_fla(away):
+        tag = u"✅ vitória" if sa > sh else (u"❌ derrota" if sa < sh else u"➖ empate")
+    else:
         tag = ""
 
     lines = [u"{} *Último resultado*".format(E_CHART)]
-    head = placar
-    if tag:
-        head = u"{}  ({})".format(head, tag)
+    head = placar + (u"  ({})".format(tag) if tag else "")
     lines.append(head)
-    if league and venue:
-        lines.append(u"{} • {} • {}".format(league, venue, date_str))
-    elif league:
-        lines.append(u"{} • {}".format(league, date_str))
-    elif venue:
-        lines.append(u"{} • {}".format(venue, date_str))
+    if comp:
+        lines.append(u"{} • {}".format(comp, date_str))
     return "\n".join(lines)
 
 
-def build_next_match_section(next_events):
-    if not next_events:
+def build_next_match_section(match):
+    if not match:
         return None
-    ev = next_events[0]
-    kickoff = parse_event_kickoff(ev)
-    home = ev.get("strHomeTeam") or "?"
-    away = ev.get("strAwayTeam") or "?"
-    league = ev.get("strLeague") or ""
-    venue = ev.get("strVenue") or "Local a confirmar"
+    kickoff = parse_utc_iso(match.get("utcDate"))
+    home = match.get("homeTeam") or {}
+    away = match.get("awayTeam") or {}
+    comp = (match.get("competition") or {}).get("name") or ""
+    matchday = match.get("matchday")
+    stage = match.get("stage")
 
     is_today = kickoff is not None and kickoff.date() == now_br().date()
     if is_today:
@@ -227,96 +201,70 @@ def build_next_match_section(next_events):
     else:
         header = u"{} *Próximo jogo*".format(E_CLOCK)
 
-    lines = [header, format_event_datetime(kickoff), u"{} x {}".format(home, away)]
+    lines = [header, format_event_datetime(kickoff),
+             u"{} x {}".format(_name(home), _name(away))]
     foot_bits = []
-    if league:
-        foot_bits.append(u"{} {}".format(E_CUP, league))
-    if venue:
-        foot_bits.append(u"{} {}".format(E_PIN, venue))
+    if comp:
+        comp_full = comp
+        if matchday:
+            comp_full += u" — Rod. {}".format(matchday)
+        elif stage and stage != "REGULAR_SEASON":
+            comp_full += u" — {}".format(stage.replace("_", " ").title())
+        foot_bits.append(u"{} {}".format(E_CUP, comp_full))
     if foot_bits:
         lines.append(u" • ".join(foot_bits))
     return "\n".join(lines)
 
 
-def build_competitions_section(next_events, last_events, br_table_row):
-    leagues = []
-    seen = set()
-    for ev in (next_events + last_events):
-        lg = (ev.get("strLeague") or "").strip()
-        if lg and lg.lower() not in seen:
-            seen.add(lg.lower())
-            leagues.append(lg)
-
-    if not leagues and not br_table_row:
+def build_standing_section(row):
+    if not row:
         return None
-
-    lines = [u"{} *Situação nas competições*".format(E_NOTE)]
-    br_added = False
-    for lg in leagues:
-        lg_lower = lg.lower()
-        is_brasileirao = ("serie a" in lg_lower or "série a" in lg_lower or "brasileir" in lg_lower)
-        if is_brasileirao and br_table_row:
-            pos = br_table_row.get("intRank") or "?"
-            pts = br_table_row.get("intPoints") or "?"
-            played = br_table_row.get("intPlayed") or "?"
-            wins = br_table_row.get("intWin") or "?"
-            draws = br_table_row.get("intDraw") or "?"
-            losses = br_table_row.get("intLoss") or "?"
-            lines.append(u"{} {}: {}º lugar • {} pts em {} jogos ({}V {}E {}D)".format(
-                E_CUP, lg, pos, pts, played, wins, draws, losses))
-            br_added = True
-        elif is_brasileirao:
-            lines.append(u"{} {} (tabela indisponível agora)".format(E_CUP, lg))
-            br_added = True
-        else:
-            round_info = ""
-            for ev in next_events:
-                if (ev.get("strLeague") or "").lower() == lg_lower:
-                    r = ev.get("intRound") or ""
-                    if r:
-                        round_info = u" — {}".format(r)
-                    break
-            lines.append(u"{} {}{}".format(E_CUP, lg, round_info))
-
-    if br_table_row and not br_added:
-        pos = br_table_row.get("intRank") or "?"
-        pts = br_table_row.get("intPoints") or "?"
-        played = br_table_row.get("intPlayed") or "?"
-        lines.append(u"{} Brasileirão Série A: {}º lugar • {} pts em {} jogos".format(
-            E_CUP, pos, pts, played))
-
+    pos = row.get("position", "?")
+    pts = row.get("points", "?")
+    played = row.get("playedGames", "?")
+    wins = row.get("won", "?")
+    draws = row.get("draw", "?")
+    losses = row.get("lost", "?")
+    gd = row.get("goalDifference")
+    gd_str = u""
+    if gd is not None:
+        sign = "+" if gd >= 0 else ""
+        gd_str = u" • SG {}{}".format(sign, gd)
+    lines = [u"{} *Situação no Brasileirão*".format(E_NOTE)]
+    lines.append(u"{} {}º lugar • {} pts em {} jogos ({}V {}E {}D){}".format(
+        E_CUP, pos, pts, played, wins, draws, losses, gd_str))
     return "\n".join(lines)
 
 
-def build_message():
+def build_message(token):
     today_label = now_br().strftime("%d/%m/%Y")
     dia_semana = DIAS_PT[now_br().weekday()]
     header = u"{} *Boletim do Mengão* — {}, {}".format(E_RUBRO, dia_semana, today_label)
 
     try:
-        next_events = fetch_next_events()
+        last = fetch_last_match(token)
     except Exception as e:
-        print("AVISO: falha em fetch_next_events: {}".format(e))
-        next_events = []
+        print("AVISO: falha em fetch_last_match: {}".format(e))
+        last = None
     try:
-        last_events = fetch_last_events()
+        nxt = fetch_next_match(token)
     except Exception as e:
-        print("AVISO: falha em fetch_last_events: {}".format(e))
-        last_events = []
-    br_row = fetch_brasileirao_table()
+        print("AVISO: falha em fetch_next_match: {}".format(e))
+        nxt = None
+    standing = fetch_brasileirao_standing(token)
 
     sections = [header]
-    s_last = build_last_result_section(last_events)
+    s_last = build_last_result_section(last)
     if s_last:
         sections.append(s_last)
-    s_next = build_next_match_section(next_events)
+    s_next = build_next_match_section(nxt)
     if s_next:
         sections.append(s_next)
-    s_comp = build_competitions_section(next_events, last_events, br_row)
-    if s_comp:
-        sections.append(s_comp)
+    s_stand = build_standing_section(standing)
+    if s_stand:
+        sections.append(s_stand)
 
-    if not s_last and not s_next and not s_comp:
+    if not s_last and not s_next and not s_stand:
         sections.append(u"Sem novidades hoje. É hora de descansar, Mengão.")
 
     sections.append(u"VAMO MENGÃO! {}".format(E_FIRE))
@@ -333,15 +281,21 @@ def send_whatsapp(phone, apikey, message):
 
 
 def main():
+    token = os.environ.get("FOOTBALL_DATA_TOKEN")
     phone = os.environ.get("CALLMEBOT_PHONE")
     apikey = os.environ.get("CALLMEBOT_APIKEY")
     dry_run = os.environ.get("DRY_RUN") == "1"
 
-    if not phone or not apikey:
-        print("ERRO: defina CALLMEBOT_PHONE e CALLMEBOT_APIKEY", file=sys.stderr)
+    missing = [k for k, v in {
+        "FOOTBALL_DATA_TOKEN": token,
+        "CALLMEBOT_PHONE": phone,
+        "CALLMEBOT_APIKEY": apikey,
+    }.items() if not v]
+    if missing:
+        print("ERRO: variaveis de ambiente faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
-    msg = build_message()
+    msg = build_message(token)
     print(u"--- BOLETIM ---")
     print(msg)
     print(u"--- FIM ---")
