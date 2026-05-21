@@ -221,7 +221,7 @@ def section_last_and_form(recent_matches):
     kickoff = parse_utc_iso(last.get("utcDate"))
     date_str = format_short_date(kickoff)
 
-    placar = u"{} {} x {} {}".format(_name(home), sh, _name(away), sa)
+    placar = u"{} {} x {} {}".format(_name(home), sh, sa, _name(away))
     outcome = _match_outcome_for_fla(last)
     tag = ""
     if outcome == "V": tag = u"{} vitória".format(E_OK)
