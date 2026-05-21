@@ -2,10 +2,10 @@ name: Flamengo Daily Briefing
 
 on:
   schedule:
-    # Alvo: chegar no zap por volta das 08:00 BRT.
-    # GitHub Actions cron e' best-effort e ATRASA em horarios de pico (as vezes 30+ min).
-    # Por isso disparamos 07:30 BRT (10:30 UTC) — o atraso natural empurra pras 8h.
-    - cron: "30 10 * * *"
+    # Alvo: chegar no zap ate as 08:00 BRT no PIOR caso.
+    # GitHub Actions cron e' best-effort e pode atrasar bastante em horarios de pico.
+    # Disparamos as 05:00 BRT (08:00 UTC) pra ter 3h de margem de atraso.
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
