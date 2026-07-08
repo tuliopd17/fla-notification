@@ -259,15 +259,14 @@ def section_last_and_form(recent_matches):
 
     placar = u"{} {} x {} {}".format(_name(home), sh, sa, _name(away))
     outcome = _match_outcome_for_fla(last)
-    tag = ""
-    if outcome == "V": tag = u"{} vitória".format(E_OK)
-    elif outcome == "D": tag = u"{} derrota".format(E_X)
-    elif outcome == "E": tag = u"{} empate".format(E_DRAW)
+    if outcome == "V": tag = E_OK
+    elif outcome == "D": tag = E_X
+    elif outcome == "E": tag = E_DRAW
+    else: tag = ""
 
-    lines = [u"{} *Último resultado*".format(E_CHART)]
-    lines.append(placar + (u"  ({})".format(tag) if tag else ""))
+    lines = [u"{} {} {}".format(E_CHART, placar, tag)]
     if comp:
-        lines.append(u"{} • {}".format(comp, date_str))
+        lines.append(u"   {} • {}".format(comp, date_str))
 
     if len(recent_matches) >= 2:
         emojis = []
@@ -279,13 +278,12 @@ def section_last_and_form(recent_matches):
             elif o == "D": emojis.append(E_X); d += 1
         if emojis:
             pts_recent = v * 3 + e
-            mood = ""
-            if pts_recent / (len(emojis) * 3) >= 0.8: mood = u" embalado"
-            elif pts_recent / (len(emojis) * 3) >= 0.6: mood = u" bem"
-            elif pts_recent / (len(emojis) * 3) >= 0.4: mood = u" irregular"
-            else: mood = u" mal"
+            ratio = pts_recent / (len(emojis) * 3)
+            if ratio >= 0.8: mood = u"— embalado"
+            elif ratio >= 0.6: mood = u"— estável"
+            elif ratio >= 0.4: mood = u"— oscilando"
+            else: mood = u"— em má fase"
 
-            # Trend arrow: compara 1a metade vs 2a metade dos ultimos jogos
             trend = u"➡️"
             if len(emojis) >= 4:
                 half = len(emojis) // 2
@@ -296,9 +294,8 @@ def section_last_and_form(recent_matches):
                 elif _pts(emojis[half:]) < _pts(emojis[:half]):
                     trend = u"↘️"
 
-            lines.append("")
-            lines.append(u"{} *Forma:* {} {} ({}V {}E {}D{})".format(
-                E_TREND, trend, "".join(emojis), v, e, d, mood))
+            lines.append(u"{} *Forma ({}j):* {} {} {}V {}E {}D {}".format(
+                E_TREND, len(emojis), trend, "".join(emojis), v, e, d, mood))
     return "\n".join(lines)
 
 
@@ -316,30 +313,30 @@ def section_next_match(match):
     is_today = kickoff is not None and kickoff.date() == now_br().date()
     if is_today:
         header = u"{} *HOJE TEM MENGÃO!*".format(E_FIRE)
-        # Countdown: quantas horas ate o jogo
         if kickoff:
             delta = kickoff - now_br()
             hours_left = int(delta.total_seconds() / 3600)
-            if hours_left > 0:
-                header += u"\n{} daqui a {}h".format(E_CLOCK, hours_left)
-            elif hours_left == 0:
-                mins_left = int(delta.total_seconds() / 60)
-                if mins_left > 0:
-                    header += u"\n{} daqui a {}min".format(E_CLOCK, mins_left)
+            mins_left = int(delta.total_seconds() / 60)
+            if mins_left <= 0:
+                header += u" — COMEÇA AGORA"
+            elif mins_left < 60:
+                header += u" — em {}min".format(mins_left)
+            else:
+                header += u" — em {}h".format(hours_left)
     else:
-        header = u"{} *Próximo jogo*".format(E_CLOCK)
+        dia = DIAS_PT[kickoff.weekday()].upper() if kickoff else "?"
+        header = u"{} *Próximo:* {} {}".format(E_CLOCK, dia, format_short_date(kickoff))
 
-    lines = [header, format_event_datetime(kickoff),
-             u"{} x {}".format(_name(home), _name(away))]
+    lines = [header]
+    lines.append(u"{} {} x {}".format(format_event_datetime(kickoff) if not is_today else kickoff.strftime("%H:%M") if kickoff else "?",
+                                        _name(home), _name(away)))
     if comp:
-        suffix = ""
-        if matchday:
-            suffix = u" — Rod. {}".format(matchday)
-        elif stage and stage != "REGULAR_SEASON":
+        suffix = u" Rod. {}".format(matchday) if matchday else ""
+        if not suffix and stage and stage != "REGULAR_SEASON":
             suffix = u" — {}".format(stage.replace("_", " ").title())
         lines.append(u"{} {}{}".format(E_CUP, comp, suffix))
     if venue:
-        lines.append(u"{} {}".format(E_PIN, venue))
+        lines[-1] += u"  {} {}".format(E_PIN, venue)
     return "\n".join(lines)
 
 
@@ -354,12 +351,9 @@ def section_standings(fla_row, full_table):
     losses = fla_row.get("lost")
     gd = fla_row.get("goalDifference")
 
-    lines = [u"{} *Brasileirão*".format(E_NOTE)]
-    lines.append(u"{} {}º • {} pts em {}j ({}V {}E {}D)".format(
-        E_CUP, pos, pts, played, wins, draws, losses))
-    if gd is not None:
-        sg = "+{}".format(gd) if gd >= 0 else str(gd)
-        lines.append(u"   SG {}".format(sg))
+    sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
+    lines = [u"{} *Brasileirão:* {}º • {} pts • {}j ({}V {}E {}D) • SG {}".format(
+        E_NOTE, pos, pts, played, wins, draws, losses, sg)]
 
     if full_table:
         leader = None
@@ -370,14 +364,14 @@ def section_standings(fla_row, full_table):
         if leader and leader.get("team", {}).get("id") != FLAMENGO_ID:
             try:
                 diff = leader.get("points") - pts
-                lines.append(u"   a {} pt(s) do líder ({})".format(diff, _name(leader.get("team"))))
+                lines.append(u"   {} pts do líder ({})".format(diff, _name(leader.get("team"))))
             except (TypeError, ValueError):
                 pass
         elif leader and leader.get("team", {}).get("id") == FLAMENGO_ID:
             for row in full_table:
                 if row.get("position") == 2:
                     try:
-                        lines.append(u"   {} LÍDER, +{} pt(s) sobre o 2º".format(E_FIRE, pts - row.get("points")))
+                        lines.append(u"   {} LÍDER +{} pts".format(E_FIRE, pts - row.get("points")))
                     except (TypeError, ValueError):
                         pass
                     break
@@ -409,19 +403,19 @@ def section_calendar(upcoming):
     rest = upcoming[1:4]
     if not rest:
         return None
-    lines = [u"{} *Próximos jogos*".format(E_CAL)]
+    lines = [u"{} *Na agenda:*".format(E_CAL)]
     for m in rest:
         kickoff = parse_utc_iso(m.get("utcDate"))
         home = _name(m.get("homeTeam"))
         away = _name(m.get("awayTeam"))
         comp_short = _short_comp_name((m.get("competition") or {}).get("name"))
-        lines.append(u"• {} {} x {} ({})".format(
+        lines.append(u"{} {} x {} ({})".format(
             format_calendar_line(kickoff), home, away, comp_short))
     return "\n".join(lines)
 
 
 def section_head2head(h2h_matches, next_match):
-    """Confrontos diretos recentes contra o proximo adversario."""
+    """Confrontos diretos recentes contra o proximo adversario (compacto)."""
     if not h2h_matches or not next_match:
         return None
     h2h = list(h2h_matches)
@@ -442,8 +436,8 @@ def section_head2head(h2h_matches, next_match):
         elif o == "D": emojis.append(E_X); d += 1
     if not emojis:
         return None
-    lines = [u"{} *Retrospecto vs {}* (últimos {})".format(E_BALL, opponent, len(emojis))]
-    lines.append(u"{}  ({}V {}E {}D)".format("".join(emojis), v, e, d))
+    lines = [u"{} *vs {} ({}j):* {} {}V {}E {}D".format(
+        E_BALL, opponent, len(emojis), "".join(emojis), v, e, d)]
     last_h2h = recent[0]
     score = (last_h2h.get("score") or {}).get("fullTime") or {}
     if score.get("home") is not None and score.get("away") is not None:
@@ -451,14 +445,14 @@ def section_head2head(h2h_matches, next_match):
         a = _name(last_h2h.get("awayTeam"))
         kickoff = parse_utc_iso(last_h2h.get("utcDate"))
         date_str = format_short_date(kickoff)
-        lines.append(u"Último: {} {} x {} ({})".format(date_str, h, score["home"], score["away"], a))
+        lines.append(u"   Último: {} {} {} x {} {}".format(date_str, h, score["home"], score["away"], a))
     return "\n".join(lines)
 
 
 def build_message(token):
-    today_label = now_br().strftime("%d/%m/%Y")
+    today_label = now_br().strftime("%d/%m")
     dia_semana = DIAS_PT[now_br().weekday()]
-    header = u"{} *Boletim do Mengão* — {}, {}".format(E_RUBRO, dia_semana, today_label)
+    header = u"{} *MENGÃO* — {}, {}".format(E_RUBRO, dia_semana, today_label)
 
     try:
         recent = fetch_recent_finished(token, n=5)
@@ -471,7 +465,6 @@ def build_message(token):
         print("AVISO: fetch_upcoming: {}".format(e))
         upcoming = []
     fla_row, full_table = fetch_brasileirao_standings(token)
-    team_info = fetch_team_info(token)
 
     sections = [header]
     s = section_last_and_form(recent)
@@ -491,15 +484,13 @@ def build_message(token):
 
     s = section_standings(fla_row, full_table)
     if s: sections.append(s)
-    s = section_team_info(team_info)
-    if s: sections.append(s)
     s = section_calendar(upcoming)
     if s: sections.append(s)
 
     if len(sections) == 1:
-        sections.append(u"Sem novidades hoje. É hora de descansar, Mengão.")
+        sections.append(u"Sem novidades hoje. Amanhã tem mais, Mengão!")
 
-    sections.append(u"VAMO MENGÃO! {}".format(E_FIRE))
+    sections.append(u"*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO))
     return "\n\n".join(sections).strip()
 
 
@@ -556,7 +547,7 @@ def send_whatsapp(phone, apikey, message):
     """Envia via CallMeBot (GET). Trunca defensivamente se passar do limite seguro."""
     if len(message) > MAX_MESSAGE_CHARS:
         # Trunca preservando o '\n\nVAMO MENGAO! 🔥' do fim
-        suffix = u"\n\nVAMO MENGÃO! {}".format(E_FIRE)
+        suffix = u"\n\n*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO)
         budget = MAX_MESSAGE_CHARS - len(suffix) - 4
         message = message[:budget].rstrip() + u" …" + suffix
         print("AVISO: mensagem truncada para {} chars (limite {})".format(len(message), MAX_MESSAGE_CHARS))
