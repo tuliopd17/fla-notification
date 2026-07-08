@@ -8,8 +8,10 @@ Dados: Football-Data.org v4 (free tier).
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
+import time
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 
@@ -105,15 +107,39 @@ def _short_comp_name(comp_name):
 
 
 def fd_get(path, token, params=None, timeout=25):
+    """GET com retry em 429 (rate limit) e 5xx. 3 tentativas, backoff 2s/4s/8s."""
     url = FD_BASE + path
-    resp = requests.get(url, headers={"X-Auth-Token": token},
-                        params=params or {}, timeout=timeout)
-    if resp.status_code == 429:
-        raise RuntimeError("Football-Data: rate limit (10 req/min free tier)")
-    if resp.status_code == 403:
-        raise RuntimeError("Football-Data: 403 (token invalido ou recurso pago)")
-    resp.raise_for_status()
-    return resp.json() or {}
+    for attempt in range(4):  # 1 inicial + 3 retries
+        try:
+            resp = requests.get(url, headers={"X-Auth-Token": token},
+                                params=params or {}, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            if attempt < 3:
+                wait = 2 ** attempt
+                print("Request error: {}, retry {}/3 apos {}s...".format(e, attempt + 1, wait))
+                time.sleep(wait)
+                continue
+            raise
+
+        if resp.status_code == 429:
+            if attempt < 3:
+                wait = 2 ** attempt
+                print("Rate limit (429), retry {}/3 apos {}s...".format(attempt + 1, wait))
+                time.sleep(wait)
+                continue
+            raise RuntimeError("Football-Data: rate limit (10 req/min free tier)")
+
+        if resp.status_code == 403:
+            raise RuntimeError("Football-Data: 403 (token invalido ou recurso pago)")
+
+        if resp.status_code >= 500 and attempt < 3:
+            wait = 2 ** attempt
+            print("Server error ({}), retry {}/3 apos {}s...".format(resp.status_code, attempt + 1, wait))
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        return resp.json() or {}
 
 
 def fetch_recent_finished(token, n=5):
@@ -128,6 +154,16 @@ def fetch_upcoming(token, n=5):
     matches = data.get("matches") or []
     matches.sort(key=lambda m: m.get("utcDate") or "")
     return matches[:n]
+
+
+def fetch_head2head(match_id, token, limit=5):
+    """Busca historico de confrontos diretos (H2H). Pode falhar com 403 no free tier."""
+    try:
+        data = fd_get("/matches/{}/head2head".format(match_id), token, {"limit": str(limit)})
+    except Exception as e:
+        print("AVISO: nao consegui buscar head2head: {}".format(e))
+        return None
+    return data.get("matches") or []
 
 
 def fetch_brasileirao_standings(token):
@@ -248,9 +284,21 @@ def section_last_and_form(recent_matches):
             elif pts_recent / (len(emojis) * 3) >= 0.6: mood = u" bem"
             elif pts_recent / (len(emojis) * 3) >= 0.4: mood = u" irregular"
             else: mood = u" mal"
+
+            # Trend arrow: compara 1a metade vs 2a metade dos ultimos jogos
+            trend = u"➡️"
+            if len(emojis) >= 4:
+                half = len(emojis) // 2
+                def _pts(slice_emojis):
+                    return sum(3 if em == E_OK else 1 if em == E_DRAW else 0 for em in slice_emojis)
+                if _pts(emojis[half:]) > _pts(emojis[:half]):
+                    trend = u"↗️"
+                elif _pts(emojis[half:]) < _pts(emojis[:half]):
+                    trend = u"↘️"
+
             lines.append("")
-            lines.append(u"{} *Forma:* {}  ({}V {}E {}D{})".format(
-                E_TREND, "".join(emojis), v, e, d, mood))
+            lines.append(u"{} *Forma:* {} {} ({}V {}E {}D{})".format(
+                E_TREND, trend, "".join(emojis), v, e, d, mood))
     return "\n".join(lines)
 
 
@@ -263,10 +311,21 @@ def section_next_match(match):
     comp = _short_comp_name((match.get("competition") or {}).get("name"))
     matchday = match.get("matchday")
     stage = match.get("stage")
+    venue = match.get("venue")
 
     is_today = kickoff is not None and kickoff.date() == now_br().date()
     if is_today:
         header = u"{} *HOJE TEM MENGÃO!*".format(E_FIRE)
+        # Countdown: quantas horas ate o jogo
+        if kickoff:
+            delta = kickoff - now_br()
+            hours_left = int(delta.total_seconds() / 3600)
+            if hours_left > 0:
+                header += u"\n{} daqui a {}h".format(E_CLOCK, hours_left)
+            elif hours_left == 0:
+                mins_left = int(delta.total_seconds() / 60)
+                if mins_left > 0:
+                    header += u"\n{} daqui a {}min".format(E_CLOCK, mins_left)
     else:
         header = u"{} *Próximo jogo*".format(E_CLOCK)
 
@@ -279,6 +338,8 @@ def section_next_match(match):
         elif stage and stage != "REGULAR_SEASON":
             suffix = u" — {}".format(stage.replace("_", " ").title())
         lines.append(u"{} {}{}".format(E_CUP, comp, suffix))
+    if venue:
+        lines.append(u"{} {}".format(E_PIN, venue))
     return "\n".join(lines)
 
 
@@ -359,6 +420,41 @@ def section_calendar(upcoming):
     return "\n".join(lines)
 
 
+def section_head2head(h2h_matches, next_match):
+    """Confrontos diretos recentes contra o proximo adversario."""
+    if not h2h_matches or not next_match:
+        return None
+    h2h = list(h2h_matches)
+    h2h.sort(key=lambda m: m.get("utcDate") or "", reverse=True)
+    recent = h2h[:5]
+    if not recent:
+        return None
+    opponent = _name(next_match.get("awayTeam") if _is_fla(next_match.get("homeTeam"))
+                     else next_match.get("homeTeam"))
+    if not opponent or opponent == "?":
+        return None
+    emojis = []
+    v = e = d = 0
+    for m in recent:
+        o = _match_outcome_for_fla(m)
+        if o == "V": emojis.append(E_OK); v += 1
+        elif o == "E": emojis.append(E_DRAW); e += 1
+        elif o == "D": emojis.append(E_X); d += 1
+    if not emojis:
+        return None
+    lines = [u"{} *Retrospecto vs {}* (últimos {})".format(E_BALL, opponent, len(emojis))]
+    lines.append(u"{}  ({}V {}E {}D)".format("".join(emojis), v, e, d))
+    last_h2h = recent[0]
+    score = (last_h2h.get("score") or {}).get("fullTime") or {}
+    if score.get("home") is not None and score.get("away") is not None:
+        h = _name(last_h2h.get("homeTeam"))
+        a = _name(last_h2h.get("awayTeam"))
+        kickoff = parse_utc_iso(last_h2h.get("utcDate"))
+        date_str = format_short_date(kickoff)
+        lines.append(u"Último: {} {} x {} ({})".format(date_str, h, score["home"], score["away"], a))
+    return "\n".join(lines)
+
+
 def build_message(token):
     today_label = now_br().strftime("%d/%m/%Y")
     dia_semana = DIAS_PT[now_br().weekday()]
@@ -382,6 +478,17 @@ def build_message(token):
     if s: sections.append(s)
     s = section_next_match(upcoming[0] if upcoming else None)
     if s: sections.append(s)
+
+    # H2H contra o proximo adversario (se houver jogo futuro)
+    if upcoming:
+        try:
+            next_match = upcoming[0]
+            h2h = fetch_head2head(next_match.get("id"), token)
+            s = section_head2head(h2h, next_match)
+            if s: sections.append(s)
+        except Exception as e:
+            print("AVISO: section_head2head: {}".format(e))
+
     s = section_standings(fla_row, full_table)
     if s: sections.append(s)
     s = section_team_info(team_info)
@@ -394,6 +501,55 @@ def build_message(token):
 
     sections.append(u"VAMO MENGÃO! {}".format(E_FIRE))
     return "\n\n".join(sections).strip()
+
+
+def build_prematch_message(token):
+    """Monta lembrete compacto de pre-jogo (so se houver jogo nas proximas 2h)."""
+    try:
+        upcoming = fetch_upcoming(token, n=3)
+    except Exception as e:
+        print("AVISO: fetch_upcoming (prematch): {}".format(e))
+        return None
+    if not upcoming:
+        return None
+
+    next_match = upcoming[0]
+    kickoff = parse_utc_iso(next_match.get("utcDate"))
+    if not kickoff:
+        return None
+
+    delta = kickoff - now_br()
+    hours_left = delta.total_seconds() / 3600
+    # So dispara se o jogo comecar entre -10min e +2h
+    if hours_left < -0.17 or hours_left > 2.0:
+        return None
+
+    home = _name(next_match.get("homeTeam"))
+    away = _name(next_match.get("awayTeam"))
+    comp = _short_comp_name((next_match.get("competition") or {}).get("name"))
+    venue = next_match.get("venue")
+
+    mins_left = int(delta.total_seconds() / 60)
+    if mins_left <= 0:
+        countdown = u"COMEÇA AGORA!"
+    elif mins_left < 60:
+        countdown = u"em {} minutos".format(mins_left)
+    else:
+        countdown = u"em {}h{}".format(hours_left,
+                                       " e {}min".format(mins_left % 60) if mins_left % 60 else "")
+
+    lines = [
+        u"{} *FLA VAI A CAMPO {}!*".format(E_FIRE, countdown.upper()),
+        u"{} {}".format(E_CLOCK, format_event_datetime(kickoff)),
+        u"{} {} x {}".format(E_BALL, home, away),
+    ]
+    if comp:
+        lines.append(u"{} {}".format(E_CUP, comp))
+    if venue:
+        lines.append(u"{} {}".format(E_PIN, venue))
+
+    lines.append(u"\n{} *VAMO MENGÃO!*".format(E_RUBRO))
+    return "\n".join(lines)
 
 
 def send_whatsapp(phone, apikey, message):
@@ -415,6 +571,11 @@ def send_whatsapp(phone, apikey, message):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Flamengo Daily Briefing")
+    parser.add_argument("--mode", choices=["daily", "prematch"], default="daily",
+                        help="daily = boletim completo (default); prematch = lembrete 2h antes do jogo")
+    args = parser.parse_args()
+
     token = os.environ.get("FOOTBALL_DATA_TOKEN")
     phone = os.environ.get("CALLMEBOT_PHONE")
     apikey = os.environ.get("CALLMEBOT_APIKEY")
@@ -429,8 +590,17 @@ def main():
         print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
-    msg = build_message(token)
-    print(u"--- BOLETIM ({} chars) ---".format(len(msg)))
+    if args.mode == "prematch":
+        msg = build_prematch_message(token)
+        if msg is None:
+            print("Prematch: nenhum jogo nas proximas 2h. Saindo silenciosamente.")
+            return 0
+        label = "LEMBRETE PRE-JOGO"
+    else:
+        msg = build_message(token)
+        label = "BOLETIM"
+
+    print(u"--- {} ({} chars) ---".format(label, len(msg)))
     print(msg)
     print(u"--- FIM ---")
 
