@@ -266,7 +266,7 @@ def section_last_and_form(recent_matches):
 
     lines = [u"{} {} {}".format(E_CHART, placar, tag)]
     if comp:
-        lines.append(u"   {} • {}".format(comp, date_str))
+        lines.append(u"{} • {}".format(comp, date_str))
 
     if len(recent_matches) >= 2:
         emojis = []
@@ -279,10 +279,10 @@ def section_last_and_form(recent_matches):
         if emojis:
             pts_recent = v * 3 + e
             ratio = pts_recent / (len(emojis) * 3)
-            if ratio >= 0.8: mood = u"— embalado"
-            elif ratio >= 0.6: mood = u"— estável"
-            elif ratio >= 0.4: mood = u"— oscilando"
-            else: mood = u"— em má fase"
+            if ratio >= 0.8: mood = u"— embalado 🔥"
+            elif ratio >= 0.6: mood = u"— estável 👍"
+            elif ratio >= 0.4: mood = u"— oscilando ⚠️"
+            else: mood = u"— em má fase 😰"
 
             trend = u"➡️"
             if len(emojis) >= 4:
@@ -294,7 +294,7 @@ def section_last_and_form(recent_matches):
                 elif _pts(emojis[half:]) < _pts(emojis[:half]):
                     trend = u"↘️"
 
-            lines.append(u"{} *Forma ({}j):* {} {} {}V {}E {}D {}".format(
+            lines.append(u"{} *Forma ({}j):* {} {}  {}V {}E {}D {}".format(
                 E_TREND, len(emojis), trend, "".join(emojis), v, e, d, mood))
     return "\n".join(lines)
 
@@ -336,7 +336,7 @@ def section_next_match(match):
             suffix = u" — {}".format(stage.replace("_", " ").title())
         lines.append(u"{} {}{}".format(E_CUP, comp, suffix))
     if venue:
-        lines[-1] += u"  {} {}".format(E_PIN, venue)
+        lines[-1] += u" {} {}".format(E_PIN, venue)
     return "\n".join(lines)
 
 
@@ -364,21 +364,21 @@ def section_standings(fla_row, full_table):
         if leader and leader.get("team", {}).get("id") != FLAMENGO_ID:
             try:
                 diff = leader.get("points") - pts
-                lines.append(u"   {} pts do líder ({})".format(diff, _name(leader.get("team"))))
+                lines.append(u"{} pts do líder ({})".format(diff, _name(leader.get("team"))))
             except (TypeError, ValueError):
                 pass
         elif leader and leader.get("team", {}).get("id") == FLAMENGO_ID:
             for row in full_table:
                 if row.get("position") == 2:
                     try:
-                        lines.append(u"   {} LÍDER +{} pts".format(E_FIRE, pts - row.get("points")))
+                        lines.append(u"{} LÍDER +{} pts".format(E_FIRE, pts - row.get("points")))
                     except (TypeError, ValueError):
                         pass
                     break
 
     zona = _zona_brasileirao(pos)
     if zona:
-        lines.append(u"   {}".format(zona))
+        lines.append(u"{}".format(zona))
     return "\n".join(lines)
 
 
@@ -436,7 +436,7 @@ def section_head2head(h2h_matches, next_match):
         elif o == "D": emojis.append(E_X); d += 1
     if not emojis:
         return None
-    lines = [u"{} *vs {} ({}j):* {} {}V {}E {}D".format(
+    lines = [u"{} *vs {} ({}j):* {}  {}V {}E {}D".format(
         E_BALL, opponent, len(emojis), "".join(emojis), v, e, d)]
     last_h2h = recent[0]
     score = (last_h2h.get("score") or {}).get("fullTime") or {}
@@ -445,7 +445,7 @@ def section_head2head(h2h_matches, next_match):
         a = _name(last_h2h.get("awayTeam"))
         kickoff = parse_utc_iso(last_h2h.get("utcDate"))
         date_str = format_short_date(kickoff)
-        lines.append(u"   Último: {} {} {} x {} {}".format(date_str, h, score["home"], score["away"], a))
+        lines.append(u"Último: {} {} {} x {} {}".format(date_str, h, score["home"], score["away"], a))
     return "\n".join(lines)
 
 
@@ -488,7 +488,7 @@ def build_message(token):
     if s: sections.append(s)
 
     if len(sections) == 1:
-        sections.append(u"Sem novidades hoje. Amanhã tem mais, Mengão!")
+        sections.append(u"Sem jogos hoje. Amanhã tem mais! {} {}".format(E_FIRE, E_RUBRO))
 
     sections.append(u"*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO))
     return "\n\n".join(sections).strip()
@@ -526,7 +526,7 @@ def build_prematch_message(token):
     elif mins_left < 60:
         countdown = u"em {} minutos".format(mins_left)
     else:
-        countdown = u"em {}h{}".format(hours_left,
+        countdown = u"em {}h{}".format(int(hours_left),
                                        " e {}min".format(mins_left % 60) if mins_left % 60 else "")
 
     lines = [
@@ -539,7 +539,7 @@ def build_prematch_message(token):
     if venue:
         lines.append(u"{} {}".format(E_PIN, venue))
 
-    lines.append(u"\n{} *VAMO MENGÃO!*".format(E_RUBRO))
+    lines.append(u"{} *VAMO MENGÃO!*".format(E_RUBRO))
     return "\n".join(lines)
 
 
@@ -549,7 +549,7 @@ def send_whatsapp(phone, apikey, message):
         # Trunca preservando o '\n\nVAMO MENGAO! 🔥' do fim
         suffix = u"\n\n*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO)
         budget = MAX_MESSAGE_CHARS - len(suffix) - 4
-        message = message[:budget].rstrip() + u" …" + suffix
+        message = message[:budget].rstrip() + u"…" + suffix
         print("AVISO: mensagem truncada para {} chars (limite {})".format(len(message), MAX_MESSAGE_CHARS))
 
     params = {"phone": phone, "text": message, "apikey": apikey}
