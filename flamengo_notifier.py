@@ -208,6 +208,26 @@ def _name(side):
     return TEAM_NAME_FIX.get(n, n)
 
 
+# Siglas de 3 letras pra tabela (largura fixa, nao quebra em telas estreitas).
+TEAM_CODE = {
+    "Palmeiras": "PAL", "Flamengo": "FLA", "Fluminense": "FLU",
+    "Athletico-PR": "CAP", "Bragantino": "RBB", "Bahia": "BAH",
+    "Coritiba": "CFC", "São Paulo": "SAO", "Atlético-MG": "CAM",
+    "Corinthians": "COR", "Cruzeiro": "CRU", "Botafogo": "BOT",
+    "Vitória": "VIT", "Internacional": "INT", "Santos": "SAN",
+    "Grêmio": "GRE", "Vasco da Gama": "VAS", "Clube do Remo": "REM",
+    "Mirassol": "MIR", "Chapecoense": "CHA", "Fortaleza": "FOR",
+    "Ceará": "CEA", "Sport": "SPT", "Atlético-GO": "ACG",
+    "Goiás": "GOI", "Cuiabá": "CUI", "Juventude": "JUV",
+    "Criciúma": "CRI", "América-MG": "AME", "Avaí": "AVA",
+    "Ponte Preta": "PON",
+}
+
+
+def _code(name):
+    return TEAM_CODE.get(name) or (name[:3].upper() if name and name != "?" else "?")
+
+
 def _is_fla(side):
     return bool(side) and side.get("id") == FLAMENGO_ID
 
@@ -249,7 +269,7 @@ def section_last_and_form(recent_matches):
     elif outcome == "E": tag = E_DRAW
     else: tag = ""
 
-    lines = [u"{} {} {}".format(E_CHART, placar, tag)]
+    lines = [u"{} *Último jogo*".format(E_CHART), u"{} {}".format(placar, tag)]
     if comp:
         lines.append(u"{} • {}".format(comp, date_str))
 
@@ -264,10 +284,10 @@ def section_last_and_form(recent_matches):
         if emojis:
             pts_recent = v * 3 + e
             ratio = pts_recent / (len(emojis) * 3)
-            if ratio >= 0.8: mood = u"— embalado 🔥"
-            elif ratio >= 0.6: mood = u"— estável 👍"
-            elif ratio >= 0.4: mood = u"— oscilando ⚠️"
-            else: mood = u"— em má fase 😰"
+            if ratio >= 0.8: mood = u"embalado 🔥"
+            elif ratio >= 0.6: mood = u"estável 👍"
+            elif ratio >= 0.4: mood = u"oscilando ⚠️"
+            else: mood = u"em má fase 😰"
 
             trend = u"➡️"
             if len(emojis) >= 4:
@@ -279,8 +299,10 @@ def section_last_and_form(recent_matches):
                 elif _pts(emojis[half:]) < _pts(emojis[:half]):
                     trend = u"↘️"
 
-            lines.append(u"{} *Forma ({}j):* {} {}  {}V {}E {}D {}".format(
-                E_TREND, len(emojis), trend, "".join(emojis), v, e, d, mood))
+            lines.append(u"")
+            lines.append(u"{} *Forma ({}j)*".format(E_TREND, len(emojis)))
+            lines.append(u"{} {}".format(trend, " ".join(emojis)))
+            lines.append(u"{}V • {}E • {}D — {}".format(v, e, d, mood))
     return "\n".join(lines)
 
 
@@ -309,19 +331,20 @@ def section_next_match(match):
             else:
                 header += u" — em {}h".format(hours_left)
     else:
-        dia = DIAS_PT[kickoff.weekday()].upper() if kickoff else "?"
-        header = u"{} *Próximo:* {} {}".format(E_CLOCK, dia, format_short_date(kickoff))
+        header = u"{} *Próximo jogo*".format(E_CLOCK)
 
-    lines = [header]
-    lines.append(u"{} {} x {}".format(format_event_datetime(kickoff) if not is_today else kickoff.strftime("%H:%M") if kickoff else "?",
-                                        _name(home), _name(away)))
+    lines = [header, u"{} x {}".format(_name(home), _name(away))]
+    if is_today:
+        lines.append(kickoff.strftime("%H:%M") if kickoff else "?")
+    else:
+        lines.append(format_event_datetime(kickoff))
     if comp:
-        suffix = u" Rod. {}".format(matchday) if matchday else ""
+        suffix = u" • Rod. {}".format(matchday) if matchday else ""
         if not suffix and stage and stage != "REGULAR_SEASON":
-            suffix = u" — {}".format(stage.replace("_", " ").title())
+            suffix = u" • {}".format(stage.replace("_", " ").title())
         lines.append(u"{} {}{}".format(E_CUP, comp, suffix))
     if venue:
-        lines[-1] += u" {} {}".format(E_PIN, venue)
+        lines.append(u"{} {}".format(E_PIN, venue))
     return "\n".join(lines)
 
 
@@ -346,13 +369,13 @@ def section_calendar(upcoming):
     rest = upcoming[1:4]
     if not rest:
         return None
-    lines = [u"{} *Na agenda:*".format(E_CAL)]
+    lines = [u"{} *Próximos jogos*".format(E_CAL)]
     for m in rest:
         kickoff = parse_utc_iso(m.get("utcDate"))
         home = _name(m.get("homeTeam"))
         away = _name(m.get("awayTeam"))
         comp_short = _short_comp_name((m.get("competition") or {}).get("name"))
-        lines.append(u"{} {} x {} ({})".format(
+        lines.append(u"{} • {} x {} ({})".format(
             format_calendar_line(kickoff), home, away, comp_short))
     return "\n".join(lines)
 
@@ -379,8 +402,11 @@ def section_head2head(h2h_matches, next_match):
         elif o == "D": emojis.append(E_X); d += 1
     if not emojis:
         return None
-    lines = [u"{} *vs {} ({}j):* {}  {}V {}E {}D".format(
-        E_BALL, opponent, len(emojis), "".join(emojis), v, e, d)]
+    lines = [
+        u"{} *Histórico vs {} ({}j)*".format(E_BALL, opponent, len(emojis)),
+        u" ".join(emojis),
+        u"{}V • {}E • {}D".format(v, e, d),
+    ]
     last_h2h = recent[0]
     score = (last_h2h.get("score") or {}).get("fullTime") or {}
     if score.get("home") is not None and score.get("away") is not None:
@@ -393,22 +419,23 @@ def section_head2head(h2h_matches, next_match):
 
 
 def section_standings(full_table):
-    """Monta a tabela completa do Brasileirao em bloco monoespacado, alinhada em colunas."""
+    """Monta a tabela completa do Brasileirao em bloco monoespacado, alinhada em colunas.
+    Usa siglas de 3 letras pro time (largura fixa) pra nao quebrar linha em telas estreitas."""
     if not full_table:
         return None
     header = u"{} *TABELA BRASILEIRÃO*".format(E_NOTE)
-    rows = [u"# Time            Pts  J   SG"]
+    rows = [u" {:>2} {:<3} {:>2} {:>2} {:>3}".format("#", "Cod", "Pt", "J", "SG")]
     for row in full_table:
         pos = row.get("position")
-        team = _name(row.get("team"))[:14]
+        code = _code(_name(row.get("team")))
         pts = row.get("points")
         played = row.get("playedGames")
         gd = row.get("goalDifference")
         sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
         is_fla = (row.get("team") or {}).get("id") == FLAMENGO_ID
         marker = u">" if is_fla else u" "
-        rows.append(u"{}{:>2} {:<14} {:>3}  {:>2}  {:>3}".format(
-            marker, pos, team, pts, played, sg))
+        rows.append(u"{}{:>2} {:<3} {:>2} {:>2} {:>3}".format(
+            marker, pos, code, pts, played, sg))
     table_block = u"```\n{}\n```".format("\n".join(rows))
     return u"{}\n{}".format(header, table_block)
 
