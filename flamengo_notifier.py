@@ -224,26 +224,6 @@ def _match_outcome_for_fla(m):
     return None
 
 
-def _zona_brasileirao(pos):
-    if pos is None:
-        return ""
-    try:
-        p = int(pos)
-    except (TypeError, ValueError):
-        return ""
-    if 1 <= p <= 4:
-        return u"\U0001F30E zona de Libertadores (G4)"
-    if 5 <= p <= 6:
-        return u"pré-Libertadores (G6)"
-    if 7 <= p <= 12:
-        return u"zona de Sul-Americana"
-    if 13 <= p <= 16:
-        return u"meio de tabela"
-    if 17 <= p <= 20:
-        return u"⚠️ rebaixamento (Z4)"
-    return ""
-
-
 def section_last_and_form(recent_matches):
     if not recent_matches:
         return None
@@ -341,48 +321,6 @@ def section_next_match(match):
     return "\n".join(lines)
 
 
-def section_standings(fla_row, full_table):
-    if not fla_row:
-        return None
-    pos = fla_row.get("position")
-    pts = fla_row.get("points")
-    played = fla_row.get("playedGames")
-    wins = fla_row.get("won")
-    draws = fla_row.get("draw")
-    losses = fla_row.get("lost")
-    gd = fla_row.get("goalDifference")
-
-    sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
-    lines = [u"{} *Brasileirão:* {}º • {} pts • {}j ({}V {}E {}D) • SG {}".format(
-        E_NOTE, pos, pts, played, wins, draws, losses, sg)]
-
-    if full_table:
-        leader = None
-        for row in full_table:
-            if row.get("position") == 1:
-                leader = row
-                break
-        if leader and leader.get("team", {}).get("id") != FLAMENGO_ID:
-            try:
-                diff = leader.get("points") - pts
-                lines.append(u"{} pts do líder ({})".format(diff, _name(leader.get("team"))))
-            except (TypeError, ValueError):
-                pass
-        elif leader and leader.get("team", {}).get("id") == FLAMENGO_ID:
-            for row in full_table:
-                if row.get("position") == 2:
-                    try:
-                        lines.append(u"{} LÍDER +{} pts".format(E_FIRE, pts - row.get("points")))
-                    except (TypeError, ValueError):
-                        pass
-                    break
-
-    zona = _zona_brasileirao(pos)
-    if zona:
-        lines.append(u"{}".format(zona))
-    return "\n".join(lines)
-
-
 def section_team_info(team_info):
     if not team_info:
         return None
@@ -450,7 +388,7 @@ def section_head2head(h2h_matches, next_match):
     return "\n".join(lines)
 
 
-def build_message(token, fla_row=None, full_table=None):
+def build_message(token):
     today_label = now_br().strftime("%d/%m")
     dia_semana = DIAS_PT[now_br().weekday()]
     header = u"{} *MENGÃO* — {}, {}".format(E_RUBRO, dia_semana, today_label)
@@ -465,8 +403,6 @@ def build_message(token, fla_row=None, full_table=None):
     except Exception as e:
         print("AVISO: fetch_upcoming: {}".format(e))
         upcoming = []
-    if fla_row is None and full_table is None:
-        fla_row, full_table = fetch_brasileirao_standings(token)
 
     sections = [header]
     s = section_last_and_form(recent)
@@ -484,8 +420,6 @@ def build_message(token, fla_row=None, full_table=None):
         except Exception as e:
             print("AVISO: section_head2head: {}".format(e))
 
-    s = section_standings(fla_row, full_table)
-    if s: sections.append(s)
     s = section_calendar(upcoming)
     if s: sections.append(s)
 
@@ -621,8 +555,8 @@ def main():
             return 0
         label = "LEMBRETE PRE-JOGO"
     else:
-        fla_row, full_table = fetch_brasileirao_standings(token)
-        msg = build_message(token, fla_row, full_table)
+        _, full_table = fetch_brasileirao_standings(token)
+        msg = build_message(token)
         table_msg = build_table_message(full_table)
         label = "BOLETIM"
 
