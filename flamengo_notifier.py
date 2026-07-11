@@ -198,10 +198,20 @@ def fetch_team_info(token):
     }
 
 
+# O 'shortName' da Football-Data corta nomes compostos pela metade
+# (ex: Athletico-PR vira "Paranaense", Atlético-MG vira "Mineiro").
+TEAM_NAME_FIX = {
+    "Paranaense": "Athletico-PR",
+    "Mineiro": "Atlético-MG",
+    "Goianiense": "Atlético-GO",
+}
+
+
 def _name(side):
     if not side:
         return "?"
-    return side.get("shortName") or side.get("name") or "?"
+    n = side.get("shortName") or side.get("name") or "?"
+    return TEAM_NAME_FIX.get(n, n)
 
 
 def _is_fla(side):
