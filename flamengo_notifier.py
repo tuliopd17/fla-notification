@@ -40,7 +40,7 @@ E_OK    = "✅"
 E_X     = "❌"
 E_DRAW  = "➖"
 
-DIAS_PT = ["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]
+DIAS_PT = [u"segunda", u"terça", u"quarta", u"quinta", u"sexta", u"sábado", u"domingo"]
 DIAS_PT_SHORT = ["SEG", "TER", "QUA", "QUI", "SEX", "SAB", "DOM"]
 MESES_PT = ["", "jan", "fev", "mar", "abr", "mai", "jun",
             "jul", "ago", "set", "out", "nov", "dez"]
