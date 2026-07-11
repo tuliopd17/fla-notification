@@ -449,7 +449,7 @@ def section_head2head(h2h_matches, next_match):
     return "\n".join(lines)
 
 
-def build_message(token):
+def build_message(token, fla_row=None, full_table=None):
     today_label = now_br().strftime("%d/%m")
     dia_semana = DIAS_PT[now_br().weekday()]
     header = u"{} *MENGÃO* — {}, {}".format(E_RUBRO, dia_semana, today_label)
@@ -464,7 +464,8 @@ def build_message(token):
     except Exception as e:
         print("AVISO: fetch_upcoming: {}".format(e))
         upcoming = []
-    fla_row, full_table = fetch_brasileirao_standings(token)
+    if fla_row is None and full_table is None:
+        fla_row, full_table = fetch_brasileirao_standings(token)
 
     sections = [header]
     s = section_last_and_form(recent)
@@ -492,6 +493,29 @@ def build_message(token):
 
     sections.append(u"*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO))
     return "\n\n".join(sections).strip()
+
+
+def build_table_message(full_table):
+    """Monta a tabela completa do Brasileirao (segunda mensagem do boletim)."""
+    if not full_table:
+        return None
+    today_label = now_br().strftime("%d/%m")
+    lines = [u"{} *TABELA BRASILEIRÃO* — {}".format(E_NOTE, today_label)]
+    for row in full_table:
+        pos = row.get("position")
+        team = _name(row.get("team"))
+        pts = row.get("points")
+        played = row.get("playedGames")
+        gd = row.get("goalDifference")
+        sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
+        line = u"{}º {} — {} pts • {}j • SG {}".format(pos, team, pts, played, sg)
+        if (row.get("team") or {}).get("id") == FLAMENGO_ID:
+            line = u"{} *{}*".format(E_RUBRO, line)
+        lines.append(line)
+        # separadores visuais: fim do G4, do G6 e inicio do Z4
+        if pos in (4, 6, 16):
+            lines.append(u"──────")
+    return "\n".join(lines)
 
 
 def build_prematch_message(token):
@@ -581,6 +605,7 @@ def main():
         print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
+    table_msg = None
     if args.mode == "prematch":
         msg = build_prematch_message(token)
         if msg is None:
@@ -588,12 +613,18 @@ def main():
             return 0
         label = "LEMBRETE PRE-JOGO"
     else:
-        msg = build_message(token)
+        fla_row, full_table = fetch_brasileirao_standings(token)
+        msg = build_message(token, fla_row, full_table)
+        table_msg = build_table_message(full_table)
         label = "BOLETIM"
 
     print(u"--- {} ({} chars) ---".format(label, len(msg)))
     print(msg)
     print(u"--- FIM ---")
+    if table_msg:
+        print(u"--- TABELA ({} chars) ---".format(len(table_msg)))
+        print(table_msg)
+        print(u"--- FIM ---")
 
     if dry_run:
         print("DRY_RUN=1, nao enviei.")
@@ -605,6 +636,16 @@ def main():
     except Exception as e:
         print("ERRO ao enviar WhatsApp: {}".format(e), file=sys.stderr)
         return 1
+
+    if table_msg:
+        # CallMeBot pode engasgar com envios em sequencia; pausa entre mensagens
+        time.sleep(10)
+        try:
+            send_whatsapp(phone, apikey, table_msg)
+            print("Tabela enviada com sucesso.")
+        except Exception as e:
+            print("ERRO ao enviar tabela: {}".format(e), file=sys.stderr)
+            return 1
     return 0
 
 
