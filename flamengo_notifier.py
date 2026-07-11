@@ -449,9 +449,6 @@ def build_table_message(full_table):
         if (row.get("team") or {}).get("id") == FLAMENGO_ID:
             line = u"{} *{}*".format(E_RUBRO, line)
         lines.append(line)
-        # separadores visuais: fim do G4, do G6 e inicio do Z4
-        if pos in (4, 6, 16):
-            lines.append(u"------")
     return "\n".join(lines)
 
 
