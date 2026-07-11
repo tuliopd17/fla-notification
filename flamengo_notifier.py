@@ -25,9 +25,10 @@ BR_TZ = timezone(timedelta(hours=-3))
 
 CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 
-# Limite seguro de chars na mensagem (a URL encoded fica ~3x maior; CallMeBot
-# trunca em algum ponto da query string; testado: ate ~1500 chars funciona bem).
-MAX_MESSAGE_CHARS = 1500
+# CallMeBot trunca a query string de URLs longas (visto na pratica: URL de
+# 1723 chars chegou cortada; 1178 chegou inteira). O limite real e o tamanho
+# da URL encodada — emojis e acentos inflam 3-9x no percent-encoding.
+MAX_URL_CHARS = 1400
 
 E_RUBRO = "\U0001F534" + "⚫"
 E_CLOCK = "⏰"
@@ -500,7 +501,9 @@ def build_table_message(full_table):
     if not full_table:
         return None
     today_label = now_br().strftime("%d/%m")
-    lines = [u"{} *TABELA BRASILEIRÃO* — {}".format(E_NOTE, today_label)]
+    # Formato compacto e quase todo ASCII: chars multibyte (º — • ─) inflam
+    # 3-9x no percent-encoding e estouram o limite de URL do CallMeBot.
+    lines = [u"{} *TABELA BRASILEIRÃO* {}".format(E_NOTE, today_label)]
     for row in full_table:
         pos = row.get("position")
         team = _name(row.get("team"))
@@ -508,13 +511,13 @@ def build_table_message(full_table):
         played = row.get("playedGames")
         gd = row.get("goalDifference")
         sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
-        line = u"{}º {} — {} pts • {}j • SG {}".format(pos, team, pts, played, sg)
+        line = u"{}. {} {}p {}j {}".format(pos, team, pts, played, sg)
         if (row.get("team") or {}).get("id") == FLAMENGO_ID:
             line = u"{} *{}*".format(E_RUBRO, line)
         lines.append(line)
         # separadores visuais: fim do G4, do G6 e inicio do Z4
         if pos in (4, 6, 16):
-            lines.append(u"──────")
+            lines.append(u"------")
     return "\n".join(lines)
 
 
@@ -568,16 +571,21 @@ def build_prematch_message(token):
 
 
 def send_whatsapp(phone, apikey, message):
-    """Envia via CallMeBot (GET). Trunca defensivamente se passar do limite seguro."""
-    if len(message) > MAX_MESSAGE_CHARS:
-        # Trunca preservando o '\n\nVAMO MENGAO! 🔥' do fim
-        suffix = u"\n\n*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO)
-        budget = MAX_MESSAGE_CHARS - len(suffix) - 4
-        message = message[:budget].rstrip() + u"…" + suffix
-        print("AVISO: mensagem truncada para {} chars (limite {})".format(len(message), MAX_MESSAGE_CHARS))
+    """Envia via CallMeBot (GET). Trunca pela URL encodada, que e o limite real."""
+    def _url_for(text):
+        params = {"phone": phone, "text": text, "apikey": apikey}
+        return "{}?{}".format(CALLMEBOT_URL, urllib.parse.urlencode(params))
 
-    params = {"phone": phone, "text": message, "apikey": apikey}
-    url = "{}?{}".format(CALLMEBOT_URL, urllib.parse.urlencode(params))
+    url = _url_for(message)
+    if len(url) > MAX_URL_CHARS:
+        # Derruba linhas do fim ate caber, marcando o corte com reticencias
+        lines = message.split("\n")
+        while len(lines) > 1 and len(_url_for("\n".join(lines) + u"\n…")) > MAX_URL_CHARS:
+            lines.pop()
+        message = "\n".join(lines).rstrip() + u"\n…"
+        url = _url_for(message)
+        print("AVISO: mensagem truncada por limite de URL (agora {} chars)".format(len(url)))
+
     print("URL final tem {} chars".format(len(url)))
     resp = requests.get(url, timeout=30)
     print("CallMeBot status={} msg_len={}".format(resp.status_code, len(message)))
