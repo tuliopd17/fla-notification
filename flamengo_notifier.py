@@ -392,7 +392,28 @@ def section_head2head(h2h_matches, next_match):
     return "\n".join(lines)
 
 
-def build_message(token):
+def section_standings(full_table):
+    """Monta a tabela completa do Brasileirao em bloco monoespacado, alinhada em colunas."""
+    if not full_table:
+        return None
+    header = u"{} *TABELA BRASILEIRÃO*".format(E_NOTE)
+    rows = [u"# Time            Pts  J   SG"]
+    for row in full_table:
+        pos = row.get("position")
+        team = _name(row.get("team"))[:14]
+        pts = row.get("points")
+        played = row.get("playedGames")
+        gd = row.get("goalDifference")
+        sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
+        is_fla = (row.get("team") or {}).get("id") == FLAMENGO_ID
+        marker = u">" if is_fla else u" "
+        rows.append(u"{}{:>2} {:<14} {:>3}  {:>2}  {:>3}".format(
+            marker, pos, team, pts, played, sg))
+    table_block = u"```\n{}\n```".format("\n".join(rows))
+    return u"{}\n{}".format(header, table_block)
+
+
+def build_message(token, full_table):
     today_label = now_br().strftime("%d/%m")
     dia_semana = DIAS_PT[now_br().weekday()]
     header = u"{} *MENGÃO* — {}, {}".format(E_RUBRO, dia_semana, today_label)
@@ -430,28 +451,11 @@ def build_message(token):
     if len(sections) == 1:
         sections.append(u"Sem jogos hoje. Amanhã tem mais! {} {}".format(E_FIRE, E_RUBRO))
 
+    s = section_standings(full_table)
+    if s: sections.append(s)
+
     sections.append(u"*VAMO MENGÃO!* {} {}".format(E_FIRE, E_RUBRO))
     return "\n\n".join(sections).strip()
-
-
-def build_table_message(full_table):
-    """Monta a tabela completa do Brasileirao (segunda mensagem do boletim)."""
-    if not full_table:
-        return None
-    today_label = now_br().strftime("%d/%m")
-    lines = [u"{} *TABELA BRASILEIRÃO* {}".format(E_NOTE, today_label)]
-    for row in full_table:
-        pos = row.get("position")
-        team = _name(row.get("team"))
-        pts = row.get("points")
-        played = row.get("playedGames")
-        gd = row.get("goalDifference")
-        sg = "+{}".format(gd) if gd is not None and gd >= 0 else str(gd) if gd is not None else "?"
-        line = u"{}. {} {}p {}j {}".format(pos, team, pts, played, sg)
-        if (row.get("team") or {}).get("id") == FLAMENGO_ID:
-            line = u"{} *{}*".format(E_RUBRO, line)
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def build_prematch_message(token):
@@ -545,7 +549,6 @@ def main():
         print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
-    table_msg = None
     if args.mode == "prematch":
         msg = build_prematch_message(token)
         if msg is None:
@@ -554,17 +557,12 @@ def main():
         label = "LEMBRETE PRE-JOGO"
     else:
         _, full_table = fetch_brasileirao_standings(token)
-        msg = build_message(token)
-        table_msg = build_table_message(full_table)
+        msg = build_message(token, full_table)
         label = "BOLETIM"
 
     print(u"--- {} ({} chars) ---".format(label, len(msg)))
     print(msg)
     print(u"--- FIM ---")
-    if table_msg:
-        print(u"--- TABELA ({} chars) ---".format(len(table_msg)))
-        print(table_msg)
-        print(u"--- FIM ---")
 
     if dry_run:
         print("DRY_RUN=1, nao enviei.")
@@ -576,15 +574,6 @@ def main():
     except Exception as e:
         print("ERRO ao enviar WhatsApp: {}".format(e), file=sys.stderr)
         return 1
-
-    if table_msg:
-        time.sleep(5)
-        try:
-            send_whatsapp(bridge_dir, jid, table_msg)
-            print("Tabela enviada com sucesso.")
-        except Exception as e:
-            print("ERRO ao enviar tabela: {}".format(e), file=sys.stderr)
-            return 1
     return 0
 
 
