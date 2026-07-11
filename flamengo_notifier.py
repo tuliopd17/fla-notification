@@ -2,7 +2,7 @@
 """
 Flamengo Daily Briefing
 -----------------------
-Boletim diario completo sobre o Mengao, via WhatsApp (CallMeBot).
+Boletim diario completo sobre o Mengao, via WhatsApp (wa-bridge/Baileys local).
 Dados: Football-Data.org v4 (free tier).
 """
 
@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
+import tempfile
 import time
-import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -22,13 +23,6 @@ FLAMENGO_ID = 1783
 BRASILEIRAO_CODE = "BSA"
 
 BR_TZ = timezone(timedelta(hours=-3))
-
-CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
-
-# CallMeBot trunca a query string de URLs longas (visto na pratica: URL de
-# 1723 chars chegou cortada; 1178 chegou inteira). O limite real e o tamanho
-# da URL encodada — emojis e acentos inflam 3-9x no percent-encoding.
-MAX_URL_CHARS = 1400
 
 E_RUBRO = "\U0001F534" + "⚫"
 E_CLOCK = "⏰"
@@ -445,8 +439,6 @@ def build_table_message(full_table):
     if not full_table:
         return None
     today_label = now_br().strftime("%d/%m")
-    # Formato compacto e quase todo ASCII: chars multibyte (º — • ─) inflam
-    # 3-9x no percent-encoding e estouram o limite de URL do CallMeBot.
     lines = [u"{} *TABELA BRASILEIRÃO* {}".format(E_NOTE, today_label)]
     for row in full_table:
         pos = row.get("position")
@@ -511,27 +503,27 @@ def build_prematch_message(token):
     return "\n".join(lines)
 
 
-def send_whatsapp(phone, apikey, message):
-    """Envia via CallMeBot (GET). Trunca pela URL encodada, que e o limite real."""
-    def _url_for(text):
-        params = {"phone": phone, "text": text, "apikey": apikey}
-        return "{}?{}".format(CALLMEBOT_URL, urllib.parse.urlencode(params))
+def send_whatsapp(bridge_dir, jid, message):
+    """Envia via wa-bridge local (Baileys), rodando `node index.js --send <jid> <arquivo>`."""
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+        f.write(message)
+        tmp_path = f.name
 
-    url = _url_for(message)
-    if len(url) > MAX_URL_CHARS:
-        # Derruba linhas do fim ate caber, marcando o corte com reticencias
-        lines = message.split("\n")
-        while len(lines) > 1 and len(_url_for("\n".join(lines) + u"\n…")) > MAX_URL_CHARS:
-            lines.pop()
-        message = "\n".join(lines).rstrip() + u"\n…"
-        url = _url_for(message)
-        print("AVISO: mensagem truncada por limite de URL (agora {} chars)".format(len(url)))
-
-    print("URL final tem {} chars".format(len(url)))
-    resp = requests.get(url, timeout=30)
-    print("CallMeBot status={} msg_len={}".format(resp.status_code, len(message)))
-    print("CallMeBot body={}".format(resp.text[:500]))
-    resp.raise_for_status()
+    try:
+        result = subprocess.run(
+            ["node", "index.js", "--send", jid, tmp_path],
+            cwd=bridge_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        print("wa-bridge stdout: {}".format(result.stdout.strip()))
+        if result.stderr:
+            print("wa-bridge stderr: {}".format(result.stderr.strip()))
+        if result.returncode != 0:
+            raise RuntimeError("wa-bridge saiu com codigo {}".format(result.returncode))
+    finally:
+        os.remove(tmp_path)
 
 
 def main():
@@ -541,14 +533,13 @@ def main():
     args = parser.parse_args()
 
     token = os.environ.get("FOOTBALL_DATA_TOKEN")
-    phone = os.environ.get("CALLMEBOT_PHONE")
-    apikey = os.environ.get("CALLMEBOT_APIKEY")
+    jid = os.environ.get("WA_GROUP_JID")
+    bridge_dir = os.environ.get("WA_BRIDGE_DIR", os.path.expanduser("~/flaapp/wa-bridge"))
     dry_run = os.environ.get("DRY_RUN") == "1"
 
     missing = [k for k, v in {
         "FOOTBALL_DATA_TOKEN": token,
-        "CALLMEBOT_PHONE": phone,
-        "CALLMEBOT_APIKEY": apikey,
+        "WA_GROUP_JID": jid,
     }.items() if not v]
     if missing:
         print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
@@ -580,17 +571,16 @@ def main():
         return 0
 
     try:
-        send_whatsapp(phone, apikey, msg)
+        send_whatsapp(bridge_dir, jid, msg)
         print("Mensagem enviada com sucesso.")
     except Exception as e:
         print("ERRO ao enviar WhatsApp: {}".format(e), file=sys.stderr)
         return 1
 
     if table_msg:
-        # CallMeBot pode engasgar com envios em sequencia; pausa entre mensagens
-        time.sleep(10)
+        time.sleep(5)
         try:
-            send_whatsapp(phone, apikey, table_msg)
+            send_whatsapp(bridge_dir, jid, table_msg)
             print("Tabela enviada com sucesso.")
         except Exception as e:
             print("ERRO ao enviar tabela: {}".format(e), file=sys.stderr)

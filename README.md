@@ -6,121 +6,134 @@ Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 - 📊 Último resultado (com placar e tag de vitória/empate/derrota)
 - 📈 Forma recente — série dos últimos 5 jogos (✅✅➖❌✅)
 - ⏰ Próximo jogo (com destaque "🔥 HOJE TEM MENGÃO!" quando for hoje)
-- 📋 Brasileirão completo — posição, pontos, V/E/D, saldo, gols pró/contra
-- 📈 Distância pro líder + zona da tabela (G4 Libertadores, G6, Sul-Americana, Z4)
-- 🌎 Competições ativas (Libertadores, Copa do Brasil quando entrar)
-- 👨 Técnico atual
+- ⚽ Confrontos diretos recentes contra o próximo adversário
 - 📅 Próximos 3 jogos no calendário
+- 📋 Tabela completa do Brasileirão (mensagem separada)
 
-**Custo:** zero. Roda no GitHub Actions (cron gratuito), busca dados na Football-Data.org (free tier, só pede email) e envia via CallMeBot (gratuito).
-
-Não precisa deixar nada ligado no seu computador.
+Em dia de jogo, um lembrete extra dispara perto do kickoff (janela de -10min a +2h).
 
 ---
 
 ## Como funciona
 
-Todo dia às **08:00 (horário de Brasília)** o GitHub Actions executa o script `flamengo_notifier.py`. Ele:
+Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 
-1. Busca o último resultado e o próximo jogo do Flamengo na Football-Data.org.
-2. Puxa a tabela atualizada do Brasileirão.
-3. Monta o boletim do dia e envia no seu WhatsApp via CallMeBot.
+1. **cron** na VM chama `flamengo_notifier.py` todo dia às **08:00 BRT** (boletim) e a cada 15min (checagem de pré-jogo, que só dispara mensagem se houver jogo na janela).
+2. O script busca dados na **Football-Data.org** (free tier): último resultado, próximo jogo, H2H, tabela do Brasileirão.
+3. Monta o boletim + a tabela (duas mensagens) e envia via **wa-bridge**, uma ponte local em Node.js (Baileys) que fala direto com o WhatsApp — sem API paga, sem CallMeBot.
 
-Você recebe **1 mensagem por dia, sempre**. Em dia de jogo o boletim destaca "HOJE TEM MENGÃO!".
+### Estrutura na VM
+
+```
+~/flaapp/
+├── flamengo_notifier.py
+├── requirements.txt
+├── venv/                  # Python 3.12 virtualenv
+├── run.sh                 # carrega .env e roda o script
+├── .env                   # FOOTBALL_DATA_TOKEN, WA_GROUP_JID, WA_BRIDGE_DIR
+├── logs/                  # daily.log, prematch.log
+└── wa-bridge/
+    ├── index.js           # ponte WhatsApp (Baileys)
+    └── auth/               # sessão pareada (não versionar)
+```
+
+Crontab (`crontab -l` na VM):
+```cron
+0 8 * * * /home/ubuntu/flaapp/run.sh --mode daily >> /home/ubuntu/flaapp/logs/daily.log 2>&1
+*/15 * * * * /home/ubuntu/flaapp/run.sh --mode prematch >> /home/ubuntu/flaapp/logs/prematch.log 2>&1
+```
+
+VM já roda em `America/Sao_Paulo`, então os horários do cron já são BRT direto (sem conversão UTC).
+
+### wa-bridge
+
+Ponte standalone em `~/flaapp/wa-bridge` (não versionada neste repo). Modos:
+- `node index.js` — pareia (QR ou `--pair <numero>`) e mantém sessão viva em `./auth`.
+- `node index.js --list-groups` — lista JIDs dos grupos acessíveis.
+- `node index.js --send <jid> <arquivo>` — manda o conteúdo do arquivo pro JID e sai.
+
+A sessão pareada fica em `./auth` — se for deslogada do WhatsApp, apague a pasta e pareie de novo.
 
 ---
 
-## Setup (uma vez só, ~10 minutos)
+## Setup em nova VM
 
-### 1. Pegar a chave do CallMeBot (WhatsApp)
-
-1. Salve o número **+34 644 51 95 23** nos seus contatos como "CallMeBot".
-2. Mande **`I allow callmebot to send me messages`** no WhatsApp para esse número.
-3. Em poucos minutos você recebe uma resposta com sua **APIKEY**. Guarde.
-4. Anote também o seu número no formato internacional sem `+`, ex: `5521988887777`.
-
-> Documentação oficial: https://www.callmebot.com/blog/free-api-whatsapp-messages/
-
-### 2. Token da Football-Data.org
+### 1. Token da Football-Data.org
 
 1. Acesse https://www.football-data.org/client/register
-2. Preencha email + nome (não pede cartão, não pede telefone). Marque "Personal" como caso de uso.
-3. Na hora você recebe um email com seu **API token**. Guarde.
+2. Preencha email + nome. Marque "Personal" como caso de uso.
+3. Você recebe um email com seu **API token**.
 
-Free tier: 10 requisições/minuto. O boletim faz 3 por dia — está folgado.
+Free tier: 10 requisições/minuto. O boletim faz poucas por dia — folgado.
 
-### 3. Subir esse projeto no GitHub
+### 2. Deploy do código
 
 ```bash
-cd "C:\Users\tulio\projetos-pessoais\FlaApp"
-git init
-git add .
-git commit -m "Flamengo notifier inicial"
-gh repo create flamengo-notifier --private --source=. --push
+scp flamengo_notifier.py requirements.txt ubuntu@<VM>:~/flaapp/
+ssh ubuntu@<VM> "cd ~/flaapp && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt"
 ```
 
-(Se preferir, crie o repo manualmente no github.com e faça push.)
+### 3. wa-bridge
 
-### 4. Configurar os Secrets do GitHub
+Suba `wa-bridge/index.js` pra `~/flaapp/wa-bridge/`, `npm install` as deps do Baileys, e pareie:
 
-No repo no GitHub: **Settings → Secrets and variables → Actions → New repository secret**.
+```bash
+ssh ubuntu@<VM> "cd ~/flaapp/wa-bridge && node index.js --pair 5521988887777"
+```
 
-Crie estes três:
+Digite o código de pareamento no celular: WhatsApp → Aparelhos conectados → Conectar dispositivo → Conectar com número de telefone.
 
-| Nome                  | Valor                                                |
-|-----------------------|------------------------------------------------------|
-| `FOOTBALL_DATA_TOKEN` | o token que veio no email da Football-Data.org       |
-| `CALLMEBOT_PHONE`     | seu número, ex: `5521988887777` (sem `+`, sem espaço)|
-| `CALLMEBOT_APIKEY`    | a apikey que o CallMeBot te mandou                   |
+Depois, descubra o JID do grupo alvo:
 
-### 5. Testar agora
+```bash
+ssh ubuntu@<VM> "cd ~/flaapp/wa-bridge && node index.js --list-groups"
+```
 
-No GitHub: **Actions → Flamengo Daily Briefing → Run workflow**.
+### 4. `.env` e `run.sh`
 
-Se quiser só ver no log sem enviar WhatsApp, marque **`dry_run = 1`**. Caso contrário, deixe `0` e você já recebe o boletim de hoje.
+```bash
+cat > ~/flaapp/.env <<'EOF'
+FOOTBALL_DATA_TOKEN=xxxx
+WA_GROUP_JID=1203xxxxxxxx@g.us
+WA_BRIDGE_DIR=/home/ubuntu/flaapp/wa-bridge
+EOF
+chmod 600 ~/flaapp/.env
+```
 
-Pronto. Daqui pra frente roda automático todo dia às 8h.
+`run.sh` carrega o `.env` e chama o script com o `venv`:
+
+```bash
+#!/bin/bash
+set -a
+source /home/ubuntu/flaapp/.env
+set +a
+cd /home/ubuntu/flaapp
+exec ./venv/bin/python flamengo_notifier.py "$@"
+```
+
+### 5. Testar
+
+```bash
+ssh ubuntu@<VM> "cd ~/flaapp && DRY_RUN=1 ./run.sh --mode daily"   # só imprime
+ssh ubuntu@<VM> "cd ~/flaapp && ./run.sh --mode daily"             # envia de verdade
+```
+
+### 6. Crontab
+
+```bash
+ssh ubuntu@<VM> "crontab -l" # editar/adicionar as duas linhas do bloco acima
+```
 
 ---
 
 ## Customizando
 
-**Horário do aviso:** edite o cron em `.github/workflows/flamengo-notifier.yml`. Lembre que o GitHub usa UTC (BRT = UTC−3).
+**Horário do boletim:** edite a linha `0 8 * * *` no crontab da VM.
 
-```yaml
-- cron: "0 11 * * *"   # 08:00 BRT (atual)
-- cron: "0 12 * * *"   # 09:00 BRT
-- cron: "30 10 * * *"  # 07:30 BRT
-```
-
-Obs: o cron do GitHub Actions é *best-effort* — em horários de pico pode atrasar 1–15 minutos. Em geral chega entre 08:00 e 08:05 BRT.
-
-**Quer um lembrete extra perto do kickoff?** Dá pra adicionar uma segunda execução no cron que dispara só se houver jogo nas próximas 2h. Me avisa que eu faço.
-
-**Quer cobertura de Libertadores/Copa do Brasil?** O free tier da Football-Data não cobre essas competições. Para incluí-las, ou pagamos o plano TIER_TWO (~$10/mês) ou complementamos com scraping pontual. Avise se quiser.
+**Cobertura de Libertadores/Copa do Brasil:** o free tier da Football-Data não cobre essas competições. Precisaria do plano TIER_TWO (~$10/mês) ou scraping pontual.
 
 ---
 
-## Por que GitHub Actions e não um servidor 24/7?
+## Por que self-hosted e não GitHub Actions?
 
-Sua dúvida foi boa: a intuição é "preciso de um servidor sempre ligado". Mas não — o que você precisa é de **alguém que rode o script 1x por dia**. GitHub Actions faz exatamente isso de graça (até 2.000 minutos/mês em repo privado, ilimitado em público — você vai usar ~30 segundos por dia).
-
-Vantagens vs. deixar rodando no PC:
-- Não depende do seu PC estar ligado.
-- Não consome luz nem CPU sua.
-- Logs ficam guardados no histórico do Actions.
-- Se quebrar, o GitHub te manda email.
-
----
-
-## Estrutura
-
-```
-FlaApp/
-├── flamengo_notifier.py        # script principal
-├── requirements.txt            # dependências (só "requests")
-├── .github/
-│   └── workflows/
-│       └── flamengo-notifier.yml   # agendamento do GitHub Actions
-└── README.md
-```
+GitHub Actions (`ubuntu-latest`) não consegue rodar o wa-bridge — a sessão do Baileys precisa de um processo Node.js persistente com estado local (`./auth`), e cada job do Actions começa do zero. Por isso a execução foi movida pra uma VM sempre ligada (Oracle Cloud free tier), com cron cuidando do agendamento.
