@@ -18,7 +18,7 @@ Em dia de jogo, um lembrete extra dispara perto do kickoff (janela de -10min a +
 
 Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 
-1. **cron** na VM chama `flamengo_notifier.py` todo dia às **08:00 BRT** (boletim) e a cada 15min (checagem de pré-jogo, que só dispara mensagem se houver jogo na janela).
+1. **cron** na VM chama `flamengo_notifier.py` todo dia às **07:00 BRT** (boletim) e a cada 15min (checagem de pré-jogo, que só dispara mensagem se houver jogo na janela).
 2. O script busca dados na **Football-Data.org** (free tier): último resultado, próximo jogo, H2H, tabela do Brasileirão.
 3. Monta o boletim + a tabela (duas mensagens) e envia via **wa-bridge**, uma ponte local em Node.js (Baileys) que fala direto com o WhatsApp — sem API paga, sem CallMeBot.
 
@@ -39,7 +39,7 @@ Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 
 Crontab (`crontab -l` na VM):
 ```cron
-0 8 * * * /home/ubuntu/flaapp/run.sh --mode daily >> /home/ubuntu/flaapp/logs/daily.log 2>&1
+0 7 * * * /home/ubuntu/flaapp/run.sh --mode daily >> /home/ubuntu/flaapp/logs/daily.log 2>&1
 */15 * * * * /home/ubuntu/flaapp/run.sh --mode prematch >> /home/ubuntu/flaapp/logs/prematch.log 2>&1
 ```
 
@@ -128,7 +128,7 @@ ssh ubuntu@<VM> "crontab -l" # editar/adicionar as duas linhas do bloco acima
 
 ## Customizando
 
-**Horário do boletim:** edite a linha `0 8 * * *` no crontab da VM.
+**Horário do boletim:** edite a linha `0 7 * * *` no crontab da VM.
 
 **Cobertura de Libertadores/Copa do Brasil:** o free tier da Football-Data não cobre essas competições. Precisaria do plano TIER_TWO (~$10/mês) ou scraping pontual.
 
