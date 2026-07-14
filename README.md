@@ -8,7 +8,7 @@ Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 - ⏰ Próximo jogo (com destaque "🔥 HOJE TEM MENGÃO!" quando for hoje)
 - ⚽ Confrontos diretos recentes contra o próximo adversário
 - 📅 Próximos 3 jogos no calendário
-- 📋 Tabela completa do Brasileirão (mensagem separada)
+- 📋 Tabela completa do Brasileirão
 
 Em dia de jogo, um lembrete extra dispara perto do kickoff (janela de -10min a +2h).
 
@@ -20,7 +20,7 @@ Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 
 1. **cron** na VM chama `flamengo_notifier.py` todo dia às **07:00 BRT** (boletim) e a cada 15min (checagem de pré-jogo, que só dispara mensagem se houver jogo na janela).
 2. O script busca dados na **Football-Data.org** (free tier): último resultado, próximo jogo, H2H, tabela do Brasileirão.
-3. Monta o boletim + a tabela (duas mensagens) e envia via **wa-bridge**, uma ponte local em Node.js (Baileys) que fala direto com o WhatsApp — sem API paga, sem CallMeBot.
+3. Monta o boletim + a tabela numa única mensagem e envia via **wa-bridge**, uma ponte local em Node.js (Baileys) que fala direto com o WhatsApp — sem API paga, sem CallMeBot.
 
 ### Estrutura na VM
 
