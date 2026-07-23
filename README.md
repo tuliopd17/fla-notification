@@ -10,7 +10,9 @@ Boletim diário sobre o Mengão direto no seu WhatsApp toda manhã.
 - 📅 Próximos 3 jogos no calendário
 - 📋 Tabela completa do Brasileirão
 
-Em dia de jogo, um lembrete extra dispara perto do kickoff (janela de -10min a +2h).
+Em dia de jogo:
+- **1 lembrete** ~10 min antes do kickoff (janela 5–20 min; state file evita spam).
+- **Placar final** quando o jogo termina (detecta FINISHED entre 1h30 e 6h após o kickoff).
 
 ---
 
@@ -18,9 +20,10 @@ Em dia de jogo, um lembrete extra dispara perto do kickoff (janela de -10min a +
 
 Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 
-1. **cron** na VM chama `flamengo_notifier.py` todo dia às **07:00 BRT** (boletim) e a cada 15min (checagem de pré-jogo, que só dispara mensagem se houver jogo na janela).
+1. **cron** na VM chama `flamengo_notifier.py` todo dia às **07:00 BRT** (boletim) e a cada 15 min (pré-jogo + placar final — só dispara se houver algo na janela e ainda não notificado).
 2. O script busca dados na **Football-Data.org** (free tier): último resultado, próximo jogo, H2H, tabela do Brasileirão.
 3. Monta o boletim + a tabela numa única mensagem e envia via **wa-bridge**, uma ponte local em Node.js (Baileys) que fala direto com o WhatsApp — sem API paga, sem CallMeBot.
+4. Estado em `state.json` (ids de matches já notificados no prematch/postmatch) pra garantir **uma mensagem por evento**.
 
 ### Estrutura na VM
 
@@ -31,7 +34,8 @@ Roda self-hosted numa VM (Oracle Cloud), sem depender de GitHub Actions:
 ├── venv/                  # Python 3.12 virtualenv
 ├── run.sh                 # carrega .env e roda o script
 ├── .env                   # FOOTBALL_DATA_TOKEN, WA_GROUP_JID, WA_BRIDGE_DIR
-├── logs/                  # daily.log, prematch.log
+├── state.json             # ids de prematch/postmatch já enviados
+├── logs/                  # daily.log, prematch.log, postmatch.log
 └── wa-bridge/
     ├── index.js           # ponte WhatsApp (Baileys)
     └── auth/               # sessão pareada (não versionar)
@@ -41,6 +45,7 @@ Crontab (`crontab -l` na VM):
 ```cron
 0 7 * * * /home/ubuntu/flaapp/run.sh --mode daily >> /home/ubuntu/flaapp/logs/daily.log 2>&1
 */15 * * * * /home/ubuntu/flaapp/run.sh --mode prematch >> /home/ubuntu/flaapp/logs/prematch.log 2>&1
+*/15 * * * * /home/ubuntu/flaapp/run.sh --mode postmatch >> /home/ubuntu/flaapp/logs/postmatch.log 2>&1
 ```
 
 VM já roda em `America/Sao_Paulo`, então os horários do cron já são BRT direto (sem conversão UTC).

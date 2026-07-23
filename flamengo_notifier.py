@@ -9,6 +9,7 @@ Dados: Football-Data.org v4 (free tier).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -23,6 +24,13 @@ FLAMENGO_ID = 1783
 BRASILEIRAO_CODE = "BSA"
 
 BR_TZ = timezone(timedelta(hours=-3))
+
+# Prematch: uma unica mensagem ~10 min antes (cron a cada 15 min → janela 5–20 min).
+PREMATCH_MIN_MINUTES = 5
+PREMATCH_MAX_MINUTES = 20
+# Postmatch: notifica placar se o kickoff foi ha entre 1h30 e 6h (jogo ja deve ter acabado).
+POSTMATCH_MIN_HOURS_AFTER_KO = 1.5
+POSTMATCH_MAX_HOURS_AFTER_KO = 6.0
 
 E_RUBRO = "\U0001F534" + "⚫"
 E_CLOCK = "⏰"
@@ -485,8 +493,54 @@ def build_message(token, full_table):
     return "\n\n".join(sections).strip()
 
 
-def build_prematch_message(token):
-    """Monta lembrete compacto de pre-jogo (so se houver jogo nas proximas 2h)."""
+def _default_state_path():
+    return os.environ.get(
+        "STATE_FILE",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"),
+    )
+
+
+def load_state(path=None):
+    path = path or _default_state_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"prematch_sent": [], "postmatch_sent": []}
+
+
+def save_state(state, path=None):
+    path = path or _default_state_path()
+    # Mantem listas curtas (ultimos 50 ids) pra nao crescer pra sempre.
+    for key in ("prematch_sent", "postmatch_sent"):
+        ids = state.get(key) or []
+        if len(ids) > 50:
+            state[key] = ids[-50:]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _already_sent(state, key, match_id):
+    if match_id is None:
+        return False
+    return match_id in (state.get(key) or [])
+
+
+def _mark_sent(state, key, match_id):
+    if match_id is None:
+        return
+    ids = state.setdefault(key, [])
+    if match_id not in ids:
+        ids.append(match_id)
+
+
+def build_prematch_message(token, state):
+    """Lembrete unico ~10 min antes do kickoff (janela 5–20 min + state)."""
     try:
         upcoming = fetch_upcoming(token, n=3)
     except Exception as e:
@@ -496,14 +550,19 @@ def build_prematch_message(token):
         return None
 
     next_match = upcoming[0]
+    match_id = next_match.get("id")
     kickoff = parse_utc_iso(next_match.get("utcDate"))
     if not kickoff:
         return None
 
-    delta = kickoff - now_br()
-    hours_left = delta.total_seconds() / 3600
-    # So dispara se o jogo comecar entre -10min e +2h
-    if hours_left < -0.17 or hours_left > 2.0:
+    mins_left = int((kickoff - now_br()).total_seconds() / 60)
+    if mins_left < PREMATCH_MIN_MINUTES or mins_left > PREMATCH_MAX_MINUTES:
+        print("Prematch: jogo em {} min (fora da janela {}–{}).".format(
+            mins_left, PREMATCH_MIN_MINUTES, PREMATCH_MAX_MINUTES))
+        return None
+
+    if _already_sent(state, "prematch_sent", match_id):
+        print("Prematch: ja enviado pro match_id={}. Pulando.".format(match_id))
         return None
 
     home = _name(next_match.get("homeTeam"))
@@ -511,17 +570,8 @@ def build_prematch_message(token):
     comp = _short_comp_name((next_match.get("competition") or {}).get("name"))
     venue = next_match.get("venue")
 
-    mins_left = int(delta.total_seconds() / 60)
-    if mins_left <= 0:
-        countdown = u"COMEÇA AGORA!"
-    elif mins_left < 60:
-        countdown = u"em {} minutos".format(mins_left)
-    else:
-        countdown = u"em {}h{}".format(int(hours_left),
-                                       " e {}min".format(mins_left % 60) if mins_left % 60 else "")
-
     lines = [
-        u"{} *FLA VAI A CAMPO {}!*".format(E_FIRE, countdown.upper()),
+        u"{} *FLA VAI A CAMPO EM ~{} MINUTOS!*".format(E_FIRE, mins_left),
         u"{} {}".format(E_CLOCK, format_event_datetime(kickoff)),
         u"{} {} x {}".format(E_BALL, home, away),
     ]
@@ -531,7 +581,75 @@ def build_prematch_message(token):
         lines.append(u"{} {}".format(E_PIN, venue))
 
     lines.append(u"{} *VAMO MENGÃO!*".format(E_RUBRO))
-    return "\n".join(lines)
+    return "\n".join(lines), match_id
+
+
+def build_postmatch_message(token, state):
+    """Placar final do jogo recem-terminado (uma vez por match_id)."""
+    try:
+        recent = fetch_recent_finished(token, n=5)
+    except Exception as e:
+        print("AVISO: fetch_recent_finished (postmatch): {}".format(e))
+        return None
+    if not recent:
+        return None
+
+    now = now_br()
+    # Do mais recente pro mais antigo; pega o primeiro elegivel.
+    candidates = list(reversed(recent))
+    for match in candidates:
+        match_id = match.get("id")
+        kickoff = parse_utc_iso(match.get("utcDate"))
+        if not kickoff:
+            continue
+
+        hours_since_ko = (now - kickoff).total_seconds() / 3600
+        if hours_since_ko < POSTMATCH_MIN_HOURS_AFTER_KO:
+            continue
+        if hours_since_ko > POSTMATCH_MAX_HOURS_AFTER_KO:
+            continue
+        if _already_sent(state, "postmatch_sent", match_id):
+            print("Postmatch: ja enviado pro match_id={}. Pulando.".format(match_id))
+            continue
+
+        score = (match.get("score") or {}).get("fullTime") or {}
+        sh, sa = score.get("home"), score.get("away")
+        if sh is None or sa is None:
+            print("Postmatch: match_id={} sem placar ainda.".format(match_id))
+            continue
+
+        home = match.get("homeTeam") or {}
+        away = match.get("awayTeam") or {}
+        comp = _short_comp_name((match.get("competition") or {}).get("name"))
+        outcome = _match_outcome_for_fla(match)
+        if outcome == "V":
+            tag = u"{} *VITÓRIA!*".format(E_OK)
+            vibe = u"VAMO MENGÃO!"
+        elif outcome == "D":
+            tag = u"{} *DERROTA*".format(E_X)
+            vibe = u"Seguimos. Vamo Flamengo!"
+        elif outcome == "E":
+            tag = u"{} *EMPATE*".format(E_DRAW)
+            vibe = u"Ponto conquistado. Vamo Mengão!"
+        else:
+            tag = u"*FIM DE JOGO*"
+            vibe = u"VAMO MENGÃO!"
+
+        placar = u"{} {} x {} {}".format(_name(home), sh, sa, _name(away))
+        lines = [
+            u"{} *FIM DE JOGO*".format(E_BALL),
+            u"{} {}".format(placar, tag),
+        ]
+        if comp:
+            lines.append(u"{} {}".format(E_CUP, comp))
+        date_str = format_short_date(kickoff)
+        if date_str:
+            lines.append(u"{} {}".format(E_CLOCK, date_str))
+        lines.append(u"{} *{}*".format(E_RUBRO, vibe))
+        return "\n".join(lines), match_id
+
+    print("Postmatch: nenhum jogo recem-terminado pra notificar.")
+    return None
 
 
 def send_whatsapp(bridge_dir, jid, message):
@@ -559,14 +677,23 @@ def send_whatsapp(bridge_dir, jid, message):
 
 def main():
     parser = argparse.ArgumentParser(description="Flamengo Daily Briefing")
-    parser.add_argument("--mode", choices=["daily", "prematch"], default="daily",
-                        help="daily = boletim completo (default); prematch = lembrete 2h antes do jogo")
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "prematch", "postmatch"],
+        default="daily",
+        help=(
+            "daily = boletim completo (default); "
+            "prematch = 1 lembrete ~10 min antes; "
+            "postmatch = placar final apos o jogo"
+        ),
+    )
     args = parser.parse_args()
 
     token = os.environ.get("FOOTBALL_DATA_TOKEN")
     jid = os.environ.get("WA_GROUP_JID")
     bridge_dir = os.environ.get("WA_BRIDGE_DIR", os.path.expanduser("~/flaapp/wa-bridge"))
     dry_run = os.environ.get("DRY_RUN") == "1"
+    state_path = _default_state_path()
 
     missing = [k for k, v in {
         "FOOTBALL_DATA_TOKEN": token,
@@ -576,12 +703,28 @@ def main():
         print("ERRO: variaveis faltando: {}".format(", ".join(missing)), file=sys.stderr)
         return 2
 
+    match_id = None
+    state_key = None
+    state = None
+
     if args.mode == "prematch":
-        msg = build_prematch_message(token)
-        if msg is None:
-            print("Prematch: nenhum jogo nas proximas 2h. Saindo silenciosamente.")
+        state = load_state(state_path)
+        result = build_prematch_message(token, state)
+        if result is None:
+            print("Prematch: nada a enviar. Saindo silenciosamente.")
             return 0
+        msg, match_id = result
+        state_key = "prematch_sent"
         label = "LEMBRETE PRE-JOGO"
+    elif args.mode == "postmatch":
+        state = load_state(state_path)
+        result = build_postmatch_message(token, state)
+        if result is None:
+            print("Postmatch: nada a enviar. Saindo silenciosamente.")
+            return 0
+        msg, match_id = result
+        state_key = "postmatch_sent"
+        label = "PLACAR FINAL"
     else:
         _, full_table = fetch_brasileirao_standings(token)
         msg = build_message(token, full_table)
@@ -601,6 +744,16 @@ def main():
     except Exception as e:
         print("ERRO ao enviar WhatsApp: {}".format(e), file=sys.stderr)
         return 1
+
+    # So marca como enviado apos sucesso no WhatsApp (evita perder o aviso se falhar).
+    if state is not None and state_key and match_id is not None:
+        _mark_sent(state, state_key, match_id)
+        try:
+            save_state(state, state_path)
+            print("State atualizado: {} += {}".format(state_key, match_id))
+        except OSError as e:
+            print("AVISO: nao consegui salvar state: {}".format(e))
+
     return 0
 
 
